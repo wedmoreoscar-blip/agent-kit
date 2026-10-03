@@ -1,0 +1,7 @@
+# Shared Codex defaults for trusted clones of this repository. Authentication and personal
+# preferences (model, effort) stay in each user's ~/.codex/config.toml.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[agents]
+enabled = true

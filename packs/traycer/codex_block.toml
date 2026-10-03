@@ -1,0 +1,4 @@
+# The Traycer CLI reaches its local host service over the network, so a sandbox without network
+# access fails every `traycer` call while filesystem work still succeeds.
+[sandbox_workspace_write]
+network_access = true

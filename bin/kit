@@ -1,0 +1,1333 @@
+#!/usr/bin/env python3
+"""kit: keep a repository's agent setup in step with the agent kit.
+
+The kit (the repository this script lives in) is the source of truth for shared skills, workflows,
+tools, guards, permission entries and AGENTS.md rules. Each project holds real copies, plus a
+receipt (.agent-kit.lock) recording a fingerprint of everything the kit put there. Comparing kit,
+receipt and repository tells which side changed, so nothing is ever overwritten silently.
+
+    kit init [--with PACK ...]       set up a new repository
+    kit adopt [--with PACK ...] [--dry-run]
+                                     bring a repository with its own agent setup under the kit
+    kit status                       what differs, read-only
+    kit sync [--discard] [--yes]     bring kit updates in, file by file, after showing each diff
+    kit push PATH ...                send local edits of kit files back to the kit
+    kit push --new PATH --pack PACK  add a project file or skill to the kit
+    kit add PACK / kit remove PACK   install or uninstall an optional pack
+    kit target add|remove TOOL       mirror skills into another AI tool's project folder
+    kit packs                        list available packs
+    kit doctor [--fix]               check this machine for this repository
+
+See docs/DESIGN.md in the kit for the full design.
+"""
+from __future__ import annotations
+
+import argparse
+import difflib
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+KIT = Path(__file__).resolve().parents[1]
+PACKS = KIT / "packs"
+TEMPLATES = KIT / "templates"
+LOCK = ".agent-kit.lock"
+TARGET_DIRS = {
+    "agents": ".agents/skills", "claude": ".claude/skills", "cursor": ".cursor/skills",
+    "grok": ".grok/skills", "kimi": ".kimi-code/skills", "kiro": ".kiro/skills",
+    "droid": ".factory/skills", "qwen": ".qwen/skills",
+}
+DEFAULT_TARGETS = ["agents", "claude"]
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+# ── small helpers ────────────────────────────────────────────────────────────────────────────────
+
+def c(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if COLOR else text
+
+
+def die(message: str, code: int = 1) -> None:
+    print(c("kit: ", "31") + message, file=sys.stderr)
+    sys.exit(code)
+
+
+def read_text(path: Path) -> str | None:
+    try:
+        return path.read_bytes().decode("utf-8", "surrogateescape")
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        return None
+
+
+def write_text(path: Path, text: str, executable: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        path.unlink()
+    path.write_bytes(text.encode("utf-8", "surrogateescape"))
+    if executable:
+        path.chmod(path.stat().st_mode | 0o111)
+
+
+def digest(text: str | None) -> str | None:
+    return None if text is None else hashlib.sha256(
+        text.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def canonical(value) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+def git(*args: str, cwd: Path, check: bool = True) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if check and result.returncode:
+        die(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def kit_head() -> str:
+    head = git("rev-parse", "--short", "HEAD", cwd=KIT, check=False) or "uncommitted"
+    if git("status", "--porcelain", cwd=KIT, check=False):
+        head += "+dirty"
+    return head
+
+
+def show_diff(old: str | None, new: str | None, old_label: str, new_label: str) -> None:
+    lines = list(difflib.unified_diff((old or "").splitlines(True), (new or "").splitlines(True),
+                                      old_label, new_label))
+    for line in lines:
+        line = line if line.endswith("\n") else line + "\n"
+        if line.startswith("+") and not line.startswith("+++"):
+            sys.stdout.write(c(line.rstrip("\n"), "32") + "\n")
+        elif line.startswith("-") and not line.startswith("---"):
+            sys.stdout.write(c(line.rstrip("\n"), "31") + "\n")
+        elif line.startswith("@@"):
+            sys.stdout.write(c(line.rstrip("\n"), "36") + "\n")
+        else:
+            sys.stdout.write(line)
+    if not lines:
+        print("  (no textual difference)")
+
+
+class Prompter:
+    """Per-item questions. 'a' answers yes to every later question of the same kind."""
+
+    def __init__(self, assume_yes: bool = False):
+        self.assume_yes = assume_yes
+        self.all = False
+        self.quit = False
+
+    def ask(self, question: str, options: str = "ynaqd", default: str = "n") -> str:
+        if self.quit:
+            return "q"
+        if self.all and "y" in options:
+            return "y"
+        if self.assume_yes:
+            return "y" if "y" in options else default
+        legend = {"y": "yes", "n": "skip", "a": "all remaining", "q": "quit", "d": "show diff",
+                  "k": "take kit", "r": "keep repo", "p": "push repo version to kit"}
+        hint = " / ".join(f"{o}={legend[o]}" for o in options)
+        while True:
+            try:
+                answer = input(f"{question} [{hint}] ").strip().lower() or default
+            except EOFError:
+                print()
+                return default
+            if answer in options:
+                if answer == "a":
+                    self.all = True
+                    return "y"
+                if answer == "q":
+                    self.quit = True
+                return answer
+
+
+# ── units: everything the kit tracks in a repository ─────────────────────────────────────────────
+
+class Unit:
+    """One tracked thing: a whole file, a marked region of a file, or one JSON entry."""
+
+    kind = "file"
+
+    def __init__(self, root: Path, pack: str, path: str, src: Path | None):
+        self.root, self.pack, self.path, self.src = root, pack, path, src
+        self.group = str(src) if src else None
+
+    @property
+    def uid(self) -> str:
+        return self.path
+
+    @property
+    def label(self) -> str:
+        return self.path
+
+    def record(self, text: str | None) -> dict:
+        return {"kind": self.kind, "pack": self.pack, "path": self.path, "hash": digest(text)}
+
+    def kit_text(self) -> str | None:
+        return read_text(self.src) if self.src else None
+
+    def repo_text(self) -> str | None:
+        return read_text(self.root / self.path)
+
+    def write(self, text: str | None) -> None:
+        target = self.root / self.path
+        if text is None:
+            if target.exists() or target.is_symlink():
+                target.unlink()
+                prune_empty(target.parent, self.root)
+            return
+        executable = bool(self.src and self.src.exists() and os.access(self.src, os.X_OK))
+        write_text(target, text, executable)
+
+    def push(self, text: str) -> Path:
+        if not self.src:
+            die(f"{self.label} is generated by the kit and cannot be pushed; edit the kit's pack "
+                f"files directly")
+        executable = os.access(self.root / self.path, os.X_OK)
+        write_text(self.src, text, executable)
+        return self.src
+
+
+class Region(Unit):
+    kind = "region"
+    STYLES = {"md": ("<!-- kit:begin {} -->", "<!-- kit:end {} -->"),
+              "hash": ("# kit:begin {}", "# kit:end {}")}
+
+    def __init__(self, root, pack, path, src, name, style, generated=None):
+        super().__init__(root, pack, path, src)
+        self.name, self.style, self.generated = name, style, generated
+
+    @property
+    def uid(self) -> str:
+        return f"{self.path}#{self.name}"
+
+    @property
+    def label(self) -> str:
+        return f"{self.path} (kit block '{self.name}')"
+
+    def record(self, text):
+        return {**super().record(text), "name": self.name, "style": self.style}
+
+    def kit_text(self):
+        if self.generated:
+            return self.generated()
+        return super().kit_text()
+
+    def _markers(self):
+        begin, end = self.STYLES[self.style]
+        return begin.format(self.name), end.format(self.name)
+
+    def _span(self, text: str):
+        begin, end = self._markers()
+        b = re.search(r"^" + re.escape(begin) + r"[ \t]*\n", text, re.M)
+        if not b:
+            return None
+        e = re.search(r"^" + re.escape(end) + r"[ \t]*$", text[b.end():], re.M)
+        if not e:
+            return None
+        return b.start(), b.end(), b.end() + e.start(), b.end() + e.end()
+
+    def repo_text(self):
+        text = read_text(self.root / self.path)
+        span = self._span(text) if text is not None else None
+        return None if span is None else text[span[1]:span[2]]
+
+    def write(self, content):
+        path = self.root / self.path
+        text = read_text(path) or ""
+        span = self._span(text)
+        begin, end = self._markers()
+        if content is None:
+            if span:
+                tail = text[span[3]:]
+                text = text[:span[0]].rstrip("\n") + ("\n" + tail.lstrip("\n") if tail.strip() else "\n")
+        else:
+            content = content if content.endswith("\n") or not content else content + "\n"
+            block = f"{begin}\n{content}{end}"
+            if span:
+                text = text[:span[0]] + block + text[span[3]:]
+            else:
+                text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block + "\n"
+        if self.path.endswith(".toml"):
+            try:
+                tomllib.loads(text)
+            except tomllib.TOMLDecodeError as exc:
+                raise ValueError(f"writing the kit block would make {self.path} invalid ({exc}); "
+                                 "the file probably already sets the same table. Merge the block's "
+                                 "settings by hand, then run `kit sync` again") from exc
+        write_text(path, text)
+
+    def push(self, text):
+        if self.generated:
+            die(f"{self.label} is generated by the kit and cannot be pushed")
+        return super().push(text)
+
+
+class JsonEntry(Unit):
+    """A list item or a dictionary key inside a JSON file the project also edits."""
+
+    kind = "json"
+
+    def __init__(self, root, pack, path, keys, value, mode):
+        super().__init__(root, pack, path, None)
+        self.keys, self.value, self.mode = list(keys), value, mode  # mode: "item" | "key"
+        self.group = None
+
+    @property
+    def ident(self) -> str:
+        return canonical(self.value) if self.mode == "item" else self.keys[-1]
+
+    @property
+    def uid(self):
+        return f"{self.path}#{'/'.join(self.keys)}={self.ident}"
+
+    @property
+    def label(self):
+        if self.mode == "key":
+            shown = canonical(self.value)
+            return f"{self.path} {'/'.join(self.keys)} = {shown if len(shown) < 60 else shown[:57] + '...'}"
+        shown = self.ident if len(self.ident) < 70 else self.ident[:67] + "..."
+        return f"{self.path} {'/'.join(self.keys)}: {shown}"
+
+    def record(self, text):
+        return {**super().record(text), "keys": self.keys, "value": self.value, "mode": self.mode}
+
+    def kit_text(self):
+        return canonical(self.value)
+
+    def _load(self):
+        text = read_text(self.root / self.path)
+        if text is None:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            die(f"{self.path} is not valid JSON; fix it before running kit")
+
+    def _container(self, data, create):
+        keys = self.keys if self.mode == "item" else self.keys[:-1]
+        node = data
+        for i, key in enumerate(keys):
+            last = i == len(keys) - 1
+            if not isinstance(node, dict):
+                return None
+            if key not in node:
+                if not create:
+                    return None
+                node[key] = [] if (last and self.mode == "item") else {}
+            node = node[key]
+        return node
+
+    def repo_text(self):
+        data = self._load()
+        if data is None:
+            return None
+        node = self._container(data, create=False)
+        if self.mode == "item":
+            return canonical(self.value) if isinstance(node, list) and any(
+                canonical(v) == canonical(self.value) for v in node) else None
+        if isinstance(node, dict) and self.keys[-1] in node:
+            return canonical(node[self.keys[-1]])
+        return None
+
+    def write(self, text):
+        data = self._load()
+        if data is None:
+            if text is None:
+                return
+            data = {}
+        node = self._container(data, create=text is not None)
+        if node is None:
+            return
+        if self.mode == "item":
+            node[:] = [v for v in node if canonical(v) != canonical(self.value)]
+            if text is not None:
+                node.append(json.loads(text))
+        elif text is None:
+            node.pop(self.keys[-1], None)
+        else:
+            node[self.keys[-1]] = json.loads(text)
+        write_text(self.root / self.path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+    def push(self, text):
+        die(f"{self.label} comes from a pack's permissions/hooks/mcp file; edit that in the kit")
+
+
+class Generated(Unit):
+    kind = "generated"
+
+    def __init__(self, root, pack, path, producer):
+        super().__init__(root, pack, path, None)
+        self.producer = producer
+
+    def kit_text(self):
+        return self.producer()
+
+
+def unit_from_record(root: Path, uid: str, rec: dict) -> Unit:
+    """Rebuild enough of a unit to read or remove it, for entries the kit no longer has."""
+    kind = rec.get("kind", "file")
+    if kind == "region":
+        return Region(root, rec["pack"], rec["path"], None, rec["name"], rec["style"])
+    if kind == "json":
+        return JsonEntry(root, rec["pack"], rec["path"], rec["keys"], rec["value"], rec["mode"])
+    unit = Unit(root, rec["pack"], rec["path"], None)
+    unit.kind = kind
+    return unit
+
+
+def prune_empty(directory: Path, root: Path) -> None:
+    while directory != root and directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+        directory = directory.parent
+
+
+# ── packs ────────────────────────────────────────────────────────────────────────────────────────
+
+def pack_meta(name: str) -> dict:
+    path = PACKS / name / "pack.toml"
+    if not path.is_file():
+        die(f"no pack named {name!r} in {PACKS}. Available: {', '.join(available_packs())}")
+    return tomllib.loads(path.read_text())
+
+
+def available_packs() -> list[str]:
+    return sorted(p.name for p in PACKS.iterdir() if (p / "pack.toml").is_file())
+
+
+def resolve_packs(names: list[str]) -> list[str]:
+    ordered: list[str] = []
+
+    def visit(name: str) -> None:
+        if name in ordered:
+            return
+        for dep in pack_meta(name).get("requires", []):
+            visit(dep)
+        ordered.append(name)
+
+    for name in ["core", *names]:
+        visit(name)
+    return ordered
+
+
+def files_under(directory: Path) -> list[Path]:
+    return sorted(p for p in directory.rglob("*")
+                  if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store")
+
+
+def load_toml(path: Path) -> dict:
+    return tomllib.loads(path.read_text()) if path.is_file() else {}
+
+
+def permission_units(root: Path, packs: list[str]) -> list[Unit]:
+    units: list[Unit] = []
+    for pack in packs:
+        data = load_toml(PACKS / pack / "permissions.toml")
+        for name in data.get("read", {}).get("deny", []):
+            for rule in (f"Read(./{name})", f"Read(**/{name})"):
+                units.append(JsonEntry(root, pack, ".claude/settings.json", ["permissions", "deny"],
+                                       rule, "item"))
+            units.append(JsonEntry(root, pack, "opencode.json", ["permission", "read", f"*{name}"],
+                                   "deny", "key"))
+        for decision in ("deny", "ask"):
+            for pattern in data.get("bash", {}).get(decision, []):
+                units.append(JsonEntry(root, pack, ".claude/settings.json",
+                                       ["permissions", decision], f"Bash({pattern})", "item"))
+                units.append(JsonEntry(root, pack, "opencode.json", ["permission", "bash", pattern],
+                                       decision, "key"))
+    if any((PACKS / p / "permissions.toml").is_file() for p in packs):
+        units.append(Generated(root, "core", ".codex/rules/kit.rules", lambda: codex_rules(packs)))
+    return units
+
+
+def codex_rules(packs: list[str]) -> str:
+    rules: list[tuple[list[str], str]] = []
+    skipped: list[str] = []
+    for pack in packs:
+        data = load_toml(PACKS / pack / "permissions.toml")
+        for decision, codex_decision in (("deny", "forbidden"), ("ask", "prompt")):
+            for pattern in data.get("bash", {}).get(decision, []):
+                tokens = pattern.split()
+                if tokens and tokens[-1] == "*":
+                    tokens = tokens[:-1]
+                if not tokens or any("*" in t for t in tokens):
+                    skipped.append(pattern)
+                    continue
+                if (tokens, codex_decision) not in rules:
+                    rules.append((tokens, codex_decision))
+    out = ["# Generated by the agent kit from its permission list (`kit sync`). Do not edit: changes",
+           "# here are reported as local edits and overwritten on request. Project rules belong in",
+           "# another .rules file in this folder.", "#",
+           "# Codex rules are literal prefixes with no wildcards, so these kit entries cannot be",
+           "# expressed here; AGENTS.md forbids them instead:"]
+    out += [f"#   {s}" for s in skipped] or ["#   (none)"]
+    for tokens, decision in rules:
+        example = " ".join(tokens)
+        out += ["", "prefix_rule(",
+                f"    pattern = {json.dumps(tokens)},",
+                f'    decision = "{decision}",',
+                '    justification = "Agent kit permission list: this is the user\'s to run.",',
+                f"    match = [{json.dumps(example)}],",
+                ")"]
+    return "\n".join(out) + "\n"
+
+
+def hook_units(root: Path, packs: list[str]) -> list[Unit]:
+    units = []
+    for pack in packs:
+        for event, hooks in load_toml(PACKS / pack / "hooks.toml").items():
+            for hook in hooks:
+                entry = {"type": "command", "command": hook["command"]}
+                for key in ("timeout", "statusMessage"):
+                    if key in hook:
+                        entry[key] = hook[key]
+                value = {"matcher": hook.get("matcher", ""), "hooks": [entry]}
+                units.append(JsonEntry(root, pack, ".claude/settings.json", ["hooks", event], value,
+                                       "item"))
+    return units
+
+
+def mcp_units(root: Path, pack: str) -> list[Unit]:
+    data = load_toml(PACKS / pack / "mcp.toml")
+    units: list[Unit] = []
+    toml_lines: list[str] = []
+    for name, server in data.get("server", {}).items():
+        if "url" in server:
+            claude = {"type": "http", "url": server["url"]}
+            opencode = {"type": "remote", "url": server["url"], "enabled": True}
+            toml_lines += [f"[mcp_servers.{name}]", f"url = {json.dumps(server['url'])}", ""]
+        else:
+            claude = {"command": server["command"], "args": server.get("args", [])}
+            opencode = {"type": "local", "command": [server["command"], *server.get("args", [])],
+                        "enabled": True}
+            toml_lines += [f"[mcp_servers.{name}]", f"command = {json.dumps(server['command'])}",
+                           f"args = {json.dumps(server.get('args', []))}", ""]
+        units.append(JsonEntry(root, pack, ".mcp.json", ["mcpServers", name], claude, "key"))
+        units.append(JsonEntry(root, pack, "opencode.json", ["mcp", name], opencode, "key"))
+    if toml_lines:
+        text = "\n".join(toml_lines).rstrip("\n") + "\n"
+        units.append(Region(root, pack, ".codex/config.toml", None, pack, "hash",
+                            generated=lambda t=text: t))
+    return units
+
+
+def build_units(root: Path, packs: list[str], targets: list[str]) -> list[Unit]:
+    units: list[Unit] = []
+    for pack in packs:
+        base = PACKS / pack
+        for skill in sorted(p for p in (base / "skills").glob("*") if p.is_dir()):
+            for src in files_under(skill):
+                rel = src.relative_to(skill)
+                for target in targets:
+                    units.append(Unit(root, pack, f"{TARGET_DIRS[target]}/{skill.name}/{rel}", src))
+        for src in files_under(base / "files"):
+            units.append(Unit(root, pack, str(src.relative_to(base / "files")), src))
+        if (base / "agents_block.md").is_file():
+            units.append(Region(root, pack, "AGENTS.md", base / "agents_block.md", pack, "md"))
+        if (base / "gitignore_block").is_file():
+            units.append(Region(root, pack, ".gitignore", base / "gitignore_block", pack, "hash"))
+        if (base / "codex_block.toml").is_file():
+            units.append(Region(root, pack, ".codex/config.toml", base / "codex_block.toml",
+                                f"{pack}-settings", "hash"))
+        units += mcp_units(root, pack)
+    units += permission_units(root, packs)
+    units += hook_units(root, packs)
+    seen: dict[str, Unit] = {}
+    for unit in units:
+        seen.setdefault(unit.uid, unit)
+    return list(seen.values())
+
+
+def home_installs(packs: list[str]) -> list[tuple[Path, str]]:
+    installs = []
+    for pack in packs:
+        for entry in pack_meta(pack).get("home", []):
+            if entry.get("only_if_exists") and not (Path.home() / entry["only_if_exists"]).exists():
+                continue
+            parts = []
+            for source in entry["sources"]:
+                src_pack, rel = source.split(":", 1)
+                parts.append((read_text(PACKS / src_pack / rel) or "").rstrip("\n"))
+            installs.append((Path.home() / entry["dest"], "\n\n".join(parts) + "\n"))
+    return installs
+
+
+# ── receipt and classification ───────────────────────────────────────────────────────────────────
+
+def repo_root() -> Path:
+    out = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if out.returncode:
+        die("not inside a git repository (run `git init` first, or use `kit init`)")
+    return Path(out.stdout.strip())
+
+
+def load_receipt(root: Path) -> dict | None:
+    text = read_text(root / LOCK)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        die(f"{LOCK} is not valid JSON")
+
+
+def save_receipt(root: Path, receipt: dict) -> None:
+    receipt["units"] = dict(sorted(receipt["units"].items()))
+    header = {"_comment": "Written by `kit` from the agent kit. Records what the kit installed so "
+                          "kit and local edits can be told apart. Do not edit by hand."}
+    write_text(root / LOCK, json.dumps({**header, **{k: v for k, v in receipt.items()
+                                                      if k != "_comment"}}, indent=2) + "\n")
+
+
+STATE_TEXT = {
+    "new": "new in kit", "update": "kit updated", "removed": "removed from kit",
+    "local": "edited here", "deleted": "deleted here", "conflict": "changed in both",
+    "untracked": "exists here, differs from kit", "converged": "same change on both sides",
+    "ok": "up to date", "adopt": "already identical",
+}
+
+
+def classify(unit: Unit, rec: dict | None, in_kit: bool) -> str:
+    kit = unit.kit_text() if in_kit else None
+    repo = unit.repo_text()
+    if rec is None:
+        if repo is None:
+            return "new"
+        return "adopt" if repo == kit else "untracked"
+    kit_changed = digest(kit) != rec["hash"]
+    repo_changed = digest(repo) != rec["hash"]
+    if not kit_changed and not repo_changed:
+        return "ok"
+    if kit_changed and not repo_changed:
+        return "removed" if kit is None else "update"
+    if repo_changed and not kit_changed:
+        return "deleted" if repo is None else "local"
+    if repo == kit:
+        return "converged"
+    if kit is None and repo is None:
+        return "converged"
+    return "conflict"
+
+
+class Session:
+    def __init__(self, root: Path, receipt: dict):
+        self.root, self.receipt = root, receipt
+        self.units = build_units(root, receipt["packs"], receipt["targets"])
+        self.by_uid = {u.uid: u for u in self.units}
+        self.orphans = [unit_from_record(root, uid, rec) for uid, rec in receipt["units"].items()
+                        if uid not in self.by_uid]
+
+    def entries(self):
+        for unit in self.units:
+            yield unit, self.receipt["units"].get(unit.uid), True
+        for unit in self.orphans:
+            yield unit, self.receipt["units"].get(unit.uid), False
+
+    def classified(self):
+        return [(unit, classify(unit, rec, in_kit), in_kit) for unit, rec, in_kit in self.entries()]
+
+    def mark(self, unit: Unit, text: str | None) -> None:
+        if text is None:
+            self.receipt["units"].pop(unit.uid, None)
+        else:
+            self.receipt["units"][unit.uid] = unit.record(text)
+
+    def apply(self, unit: Unit, text: str | None) -> None:
+        try:
+            unit.write(text)
+        except ValueError as exc:
+            print(c("  skipped ", "31") + f"{unit.label}: {exc}")
+            return
+        self.mark(unit, text)
+
+
+def describe(unit: Unit, state: str) -> str:
+    color = {"update": "33", "new": "32", "removed": "33", "local": "35", "deleted": "35",
+             "conflict": "31", "untracked": "31"}.get(state, "0")
+    return f"  {c(STATE_TEXT[state].ljust(30), color)} {unit.label}"
+
+
+def preview(unit: Unit, state: str) -> None:
+    kit = unit.kit_text()
+    repo = unit.repo_text()
+    if state == "new":
+        lines = (kit or "").splitlines()
+        print(f"  new: {len(lines)} lines")
+    show_diff(repo, kit, f"repo:{unit.label}", f"kit:{unit.label}")
+
+
+# ── commands ─────────────────────────────────────────────────────────────────────────────────────
+
+def kit_log_since(commit: str | None) -> list[str]:
+    if not commit:
+        return []
+    base = commit.split("+")[0]
+    out = git("log", "--oneline", f"{base}..HEAD", cwd=KIT, check=False)
+    return [line for line in out.splitlines() if line]
+
+
+def print_kit_commits(receipt: dict) -> None:
+    log = kit_log_since(receipt.get("kit_commit"))
+    head = kit_head()
+    if log:
+        print(c(f"The kit has {len(log)} new commit(s) since this repository last synced "
+                f"({receipt.get('kit_commit')} → {head}):", "1"))
+        for line in log:
+            print(f"  {line}")
+    if head.endswith("+dirty"):
+        print(c(f"Note: the kit at {KIT} has uncommitted changes.", "33"))
+
+
+def cmd_status(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here; run `kit init` or `kit adopt`")
+    session = Session(root, receipt)
+    print(f"Repository {root}\nPacks {', '.join(receipt['packs'])}; skill targets "
+          f"{', '.join(receipt['targets'])}; last synced to kit {receipt.get('kit_commit')}")
+    print_kit_commits(receipt)
+    rows = [(u, s) for u, s, _ in session.classified() if s not in ("ok",)]
+    if rows:
+        print()
+        for unit, state in sorted(rows, key=lambda r: (r[1], r[0].label)):
+            print(describe(unit, state))
+        print("\nRun `kit sync` to take kit updates (each diff is shown first); `kit push <path>` "
+              "to send local edits to the kit.")
+    else:
+        print(c("\nEverything the kit installed is up to date.", "32"))
+    report_mirror_drift(session)
+    for dest, text in home_installs(receipt["packs"]):
+        if read_text(dest) != text:
+            print(describe(Unit(root, "home", str(dest), None), "update").replace(
+                "kit updated", "machine file differs") + " (kit sync installs it)")
+    return 0
+
+
+def report_mirror_drift(session: Session) -> bool:
+    groups: dict[str, list[Unit]] = {}
+    for unit in session.units:
+        if unit.group and unit.kind == "file" and "/skills/" in f"/{unit.path}":
+            groups.setdefault(unit.group, []).append(unit)
+    drift = False
+    for members in groups.values():
+        texts = {m.path: m.repo_text() for m in members}
+        if len(set(texts.values())) > 1:
+            if not drift:
+                print(c("\nSkill copies that differ between tool folders:", "31"))
+            drift = True
+            for path in texts:
+                print(f"    {path}")
+    return drift
+
+
+def run_sync(session: Session, prompter: Prompter, discard: bool = False,
+             auto_new: bool = False, adopt: bool = False) -> dict:
+    counts: dict[str, int] = {}
+    pushed: list[Path] = []
+    for unit, state, in_kit in session.classified():
+        if prompter.quit:
+            break
+        kit = unit.kit_text() if in_kit else None
+        counts[state] = counts.get(state, 0) + 1
+        if state in ("ok",):
+            continue
+        if state in ("adopt", "converged"):
+            session.mark(unit, kit if in_kit else None)
+            continue
+        if state == "new":
+            if auto_new:
+                session.apply(unit, kit)
+                continue
+            print(describe(unit, state))
+            answer = ask_with_diff(prompter, unit, state, "Install it?")
+            if answer == "y":
+                session.apply(unit, kit)
+            continue
+        if state == "update":
+            print(describe(unit, state))
+            if ask_with_diff(prompter, unit, state, "Apply this kit update?") == "y":
+                session.apply(unit, kit)
+            continue
+        if state == "removed":
+            print(describe(unit, state))
+            if prompter.ask("The kit no longer has this. Remove it here?", "ynaq") == "y":
+                unit.write(None)
+                session.mark(unit, None)
+            continue
+        if state == "untracked":
+            print(describe(unit, state))
+            preview(unit, state)
+            options = "krpq" if adopt else "krq"
+            answer = prompter.ask("Take the kit version, keep the repo version as a local edit"
+                                  + (", or push the repo version into the kit?" if adopt else "?"),
+                                  options, default="r")
+            if answer == "k":
+                session.apply(unit, kit)
+            elif answer == "r":
+                session.mark(unit, kit)  # tracked; shows as "edited here" from now on
+            elif answer == "p":
+                pushed.append(unit.push(unit.repo_text()))
+                session.mark(unit, unit.repo_text())
+            continue
+        if state in ("local", "deleted", "conflict"):
+            print(describe(unit, state))
+            if state == "conflict":
+                print("  Both the kit and this repository changed it since the last sync.")
+                preview(unit, state)
+            if discard:
+                if state != "conflict":
+                    preview(unit, state)
+                if prompter.ask("Discard the local version and take the kit's?", "ynq") == "y":
+                    session.apply(unit, kit)
+            elif state != "conflict":
+                print("    keep it and `kit push` it, or `kit sync --discard` to take the kit's")
+    if pushed:
+        commit_kit(pushed, f"kit push from {session.root.name} (adopt)")
+    return counts
+
+
+def ask_with_diff(prompter: Prompter, unit: Unit, state: str, question: str) -> str:
+    if state == "update" and not prompter.all and not prompter.assume_yes:
+        preview(unit, state)
+    while True:
+        answer = prompter.ask(question, "ynaqd")
+        if answer == "d":
+            preview(unit, state)
+            continue
+        return answer
+
+
+def sync_home(packs: list[str], prompter: Prompter) -> None:
+    for dest, text in home_installs(packs):
+        current = read_text(dest)
+        if current == text:
+            continue
+        print(describe(Unit(Path("/"), "home", str(dest), None), "update").replace(
+            "kit updated", "machine file differs"))
+        show_diff(current, text, str(dest), "kit")
+        if prompter.ask(f"Write {dest}?", "ynq") == "y":
+            write_text(dest, text)
+
+
+def validate_configs(root: Path) -> list[str]:
+    problems = []
+    for rel, loader in ((".codex/config.toml", tomllib.loads), (".claude/settings.json", json.loads),
+                        ("opencode.json", json.loads), (".mcp.json", json.loads)):
+        text = read_text(root / rel)
+        if text is not None:
+            try:
+                loader(text)
+            except Exception as exc:  # noqa: BLE001
+                problems.append(f"{rel} no longer parses: {exc}")
+    return problems
+
+
+def finish(root: Path, session: Session, set_commit: bool = True) -> None:
+    if set_commit:
+        session.receipt["kit_commit"] = kit_head()
+    save_receipt(root, session.receipt)
+    for problem in validate_configs(root):
+        print(c("WARNING ", "31") + problem + " — fix it by hand (a kit block may clash with an "
+              "existing table).")
+    report_mirror_drift(session)
+
+
+def cmd_sync(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here; run `kit init` or `kit adopt`")
+    print_kit_commits(receipt)
+    session = Session(root, receipt)
+    prompter = Prompter(args.yes)
+    counts = run_sync(session, prompter, discard=args.discard)
+    sync_home(receipt["packs"], prompter)
+    pending = sum(counts.get(s, 0) for s in ("local", "deleted", "conflict"))
+    finish(root, session)
+    changed = sum(counts.get(s, 0) for s in ("new", "update", "removed"))
+    print(c(f"\nDone. {changed} kit change(s) offered; {pending} local edit(s) left for "
+            f"`kit push` or `--discard`.", "1"))
+    return 0
+
+
+def template_files() -> list[Path]:
+    return files_under(TEMPLATES)
+
+
+def copy_templates(root: Path, only_missing: bool = True, prompter: Prompter | None = None) -> list[str]:
+    created = []
+    project = root.name
+    for src in template_files():
+        rel = src.relative_to(TEMPLATES)
+        dest = root / rel
+        if dest.exists():
+            continue
+        if prompter and prompter.ask(f"Create {rel} from the kit template?", "ynaq") != "y":
+            continue
+        text = (read_text(src) or "").replace("{{PROJECT}}", project)
+        write_text(dest, text, os.access(src, os.X_OK))
+        created.append(str(rel))
+    return created
+
+
+def cmd_init(args) -> int:
+    cwd = Path.cwd()
+    if subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).returncode:
+        print(f"{cwd} is not a git repository; running `git init`.")
+        git("init", cwd=cwd)
+    root = repo_root()
+    if (root / LOCK).exists():
+        die("this repository already has .agent-kit.lock; use `kit sync`")
+    existing = [p for p in ("AGENTS.md", ".agents/skills", ".claude/skills", "opencode.json")
+                if (root / p).exists()]
+    if existing:
+        die(f"this repository already has agent files ({', '.join(existing)}); use `kit adopt`, "
+            f"which compares them with the kit before changing anything")
+    packs = resolve_packs(args.with_ or [])
+    receipt = {"kit_commit": None, "packs": packs, "targets": list(DEFAULT_TARGETS), "units": {}}
+    created = copy_templates(root)
+    session = Session(root, receipt)
+    for unit in session.units:
+        session.apply(unit, unit.kit_text())
+    sync_home(packs, Prompter())
+    finish(root, session)
+    print(c(f"Initialised {root.name} with packs: {', '.join(packs)}.", "1"))
+    print(f"  {len(created)} starter files from templates, {len(session.units)} kit-tracked entries.")
+    print("Next:\n  1. Fill in AGENTS.md (Purpose, Project invariants) and docs/project_profile.md "
+          "(the TOML block first).\n  2. Run tools/check-agent-setup.\n  3. Review `git status` and "
+          "commit.")
+    return 0
+
+
+def prefill_profile(root: Path) -> None:
+    pkg = read_text(root / "package.json")
+    if pkg is None:
+        return
+    try:
+        scripts = json.loads(pkg).get("scripts", {})
+    except json.JSONDecodeError:
+        return
+    print("\npackage.json scripts found; use them in the profile's [commands] block:")
+    for name, command in scripts.items():
+        print(f"  {name} = \"npm run {name}\"    # {command}")
+
+
+def report_duplicate_hooks(root: Path, session: Session) -> None:
+    """Pre-existing hook entries that run a script the kit now wires up itself."""
+    data = json.loads(read_text(root / ".claude/settings.json") or "{}")
+    tracked = {canonical(u.value) for u in session.units if isinstance(u, JsonEntry)
+               and u.keys[:1] == ["hooks"] and u.uid in session.receipt["units"]}
+    kit_commands = {h["command"] for u in session.units if isinstance(u, JsonEntry)
+                    and u.keys[:1] == ["hooks"] for h in u.value.get("hooks", [])}
+    for event, entries in data.get("hooks", {}).items():
+        for entry in entries:
+            if canonical(entry) in tracked:
+                continue
+            dupes = [h["command"] for h in entry.get("hooks", []) if h.get("command") in kit_commands]
+            if dupes:
+                print(c("  duplicate hook ", "33") + f"{event} matcher {entry.get('matcher')!r} also "
+                      f"runs {', '.join(dupes)}; the kit now adds its own entry. Remove the old one "
+                      "from .claude/settings.json.")
+
+
+def cmd_adopt(args) -> int:
+    root = repo_root()
+    if (root / LOCK).exists():
+        die("this repository already has .agent-kit.lock; use `kit sync`")
+    packs = resolve_packs(args.with_ or [])
+    receipt = {"kit_commit": None, "packs": packs, "targets": list(DEFAULT_TARGETS), "units": {}}
+    session = Session(root, receipt)
+    plan = session.classified()
+    print(c(f"Adopting {root.name} into the agent kit with packs: {', '.join(packs)}", "1"))
+    summary: dict[str, list[Unit]] = {}
+    for unit, state, _ in plan:
+        summary.setdefault(state, []).append(unit)
+    for state in ("adopt", "new", "untracked"):
+        units = summary.get(state, [])
+        print(f"\n{STATE_TEXT[state]}: {len(units)}")
+        for unit in units[:200]:
+            print(f"    {unit.label}")
+    missing_templates = [str(p.relative_to(TEMPLATES)) for p in template_files()
+                         if not (root / p.relative_to(TEMPLATES)).exists()]
+    print(f"\nstarter files missing (offered from templates): {len(missing_templates)}")
+    for rel in missing_templates:
+        print(f"    {rel}")
+    if args.dry_run:
+        print("\nDry run: nothing was changed.")
+        return 0
+    print()
+    prompter = Prompter()
+    copy_templates(root, prompter=prompter)
+    run_sync(session, prompter, adopt=True)
+    sync_home(packs, prompter)
+    finish(root, session)
+    report_duplicate_hooks(root, session)
+    prefill_profile(root)
+    print(c("\nAdopted. Nothing was committed: review `git diff`, run tools/check-agent-setup, and "
+            "commit.", "1"))
+    return 0
+
+
+def commit_kit(paths: list[Path], message: str) -> None:
+    rels = sorted({str(p.relative_to(KIT)) for p in paths if KIT in p.parents or p == KIT})
+    if not rels:
+        return
+    git("add", "-A", "--", *rels, cwd=KIT)
+    if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=KIT).returncode == 0:
+        return
+    git("commit", "-q", "-m", message, cwd=KIT)
+    print(c(f"Committed to the kit: {git('log', '-1', '--oneline', cwd=KIT)}", "32"))
+
+
+def cmd_push(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here; run `kit init` or `kit adopt`")
+    if args.new:
+        return push_new(root, receipt, args)
+    session = Session(root, receipt)
+    head_before = git("rev-parse", "--short", "HEAD", cwd=KIT, check=False)
+    in_step = (receipt.get("kit_commit") or "") == head_before
+    selected = []
+    for raw in args.paths:
+        rel = os.path.relpath(Path(raw).resolve(), root)
+        matches = [u for u in session.units if u.path == rel or u.path.startswith(rel.rstrip("/") + "/")]
+        if not matches:
+            die(f"{rel} is not tracked by the kit. To add it to the kit use "
+                f"`kit push --new {rel} --pack <pack>`")
+        selected += matches
+    prompter = Prompter(args.yes)
+    written: list[Path] = []
+    pushed_paths: list[str] = []
+    for unit in selected:
+        state = classify(unit, receipt["units"].get(unit.uid), True)
+        if state in ("ok", "adopt", "converged"):
+            continue
+        if state == "conflict":
+            print(describe(unit, state) + "\n    The kit also changed; run `kit sync` first.")
+            continue
+        if state not in ("local", "untracked"):
+            print(describe(unit, state) + "\n    nothing local to push")
+            continue
+        repo = unit.repo_text()
+        print(describe(unit, state))
+        show_diff(unit.kit_text(), repo, f"kit:{unit.label}", f"repo:{unit.label}")
+        if prompter.ask("Push this into the kit?", "ynaq") != "y":
+            continue
+        written.append(unit.push(repo))
+        pushed_paths.append(unit.path)
+        session.mark(unit, repo)
+        for sibling in session.units:  # mirror copies of the same kit file in other tool folders
+            if sibling is not unit and sibling.group and sibling.group == unit.group:
+                session.apply(sibling, repo)
+    if not written:
+        print("Nothing pushed.")
+        save_receipt(root, session.receipt)
+        return 0
+    commit_kit(written, f"kit push from {root.name}: " + ", ".join(sorted(set(pushed_paths)))[:200])
+    if in_step:
+        session.receipt["kit_commit"] = kit_head()
+    save_receipt(root, session.receipt)
+    print("Other repositories pick this up with `kit sync`. Push the kit itself with "
+          f"`git -C {KIT} push` when ready.")
+    return 0
+
+
+def push_new(root: Path, receipt: dict, args) -> int:
+    if not args.pack:
+        die("--new needs --pack <pack>")
+    if len(args.paths) != 1:
+        die("--new takes exactly one path")
+    pack = args.pack
+    pack_dir = PACKS / pack
+    rel = os.path.relpath(Path(args.paths[0]).resolve(), root)
+    src = root / rel
+    if not src.exists():
+        die(f"{rel} does not exist")
+    session = Session(root, receipt)
+    if any(u.path == rel or u.path.startswith(rel + "/") for u in session.units):
+        die(f"{rel} is already tracked by the kit; use `kit push {rel}`")
+    skill_dirs = {v: k for k, v in TARGET_DIRS.items()}
+    skill = None
+    for prefix in skill_dirs:
+        if rel.startswith(prefix + "/"):
+            skill = rel[len(prefix) + 1:].split("/")[0]
+            if src.is_dir() and rel != f"{prefix}/{skill}":
+                die(f"push the whole skill folder: {prefix}/{skill}")
+            src = root / prefix / skill
+    if skill:
+        dest = pack_dir / "skills" / skill
+        if any((PACKS / p / "skills" / skill).exists() for p in available_packs()):
+            die(f"the kit already has a skill named {skill!r}")
+    else:
+        dest = pack_dir / "files" / rel
+        if dest.exists():
+            die(f"the kit already has {dest.relative_to(KIT)}")
+    print(f"Adding {rel} to the kit as {dest.relative_to(KIT)}")
+    if Prompter(args.yes).ask("Continue?", "yn") != "y":
+        return 0
+    if not (pack_dir / "pack.toml").exists():
+        write_text(pack_dir / "pack.toml", 'description = "TODO: describe this pack"\nrequires = []\n')
+    if src.is_dir():
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"))
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+    if pack not in receipt["packs"]:
+        receipt["packs"].append(pack)
+    session = Session(root, receipt)
+    for unit in session.units:
+        if unit.src and (unit.src == dest or dest in unit.src.parents):
+            session.apply(unit, unit.kit_text())  # also mirrors a skill into every tool folder
+    commit_kit([dest] + ([pack_dir / "pack.toml"]), f"kit push --new from {root.name}: {rel}")
+    save_receipt(root, session.receipt)
+    return 0
+
+
+def cmd_add(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here; run `kit init` or `kit adopt`")
+    if args.pack in receipt["packs"]:
+        die(f"{args.pack} is already installed")
+    receipt["packs"] = resolve_packs([*receipt["packs"][1:], args.pack])
+    session = Session(root, receipt)
+    prompter = Prompter(args.yes)
+    run_sync(session, prompter, auto_new=True)
+    sync_home(receipt["packs"], prompter)
+    finish(root, session, set_commit=False)
+    print(c(f"Installed pack {args.pack}. Packs now: {', '.join(receipt['packs'])}", "1"))
+    return 0
+
+
+def cmd_remove(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here")
+    if args.pack == "core":
+        die("core cannot be removed")
+    if args.pack not in receipt["packs"]:
+        die(f"{args.pack} is not installed")
+    for other in receipt["packs"]:
+        if other != args.pack and args.pack in pack_meta(other).get("requires", []):
+            die(f"{other} requires {args.pack}; remove {other} first")
+    prompter = Prompter(args.yes)
+    for uid, rec in list(receipt["units"].items()):
+        if rec["pack"] != args.pack:
+            continue
+        unit = unit_from_record(root, uid, rec)
+        if digest(unit.repo_text()) != rec["hash"] and unit.repo_text() is not None:
+            print(describe(unit, "local"))
+            if prompter.ask("Edited here. Remove anyway?", "ynq") != "y":
+                continue
+        unit.write(None)
+        receipt["units"].pop(uid)
+    receipt["packs"].remove(args.pack)
+    save_receipt(root, receipt)
+    print(c(f"Removed pack {args.pack}.", "1"))
+    return 0
+
+
+def cmd_target(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here")
+    tool = args.tool
+    if tool not in TARGET_DIRS:
+        die(f"unknown tool {tool!r}; known: {', '.join(TARGET_DIRS)}")
+    if args.action == "add":
+        if tool in receipt["targets"]:
+            die(f"{tool} is already a target")
+        receipt["targets"].append(tool)
+        session = Session(root, receipt)
+        project_skills = sorted(p.name for p in (root / ".agents/skills").glob("*")
+                                if p.is_dir() and not (root / TARGET_DIRS[tool] / p.name).exists()
+                                and not any(u.path.startswith(f".agents/skills/{p.name}/")
+                                            for u in session.units))
+        for unit in session.units:
+            if unit.path.startswith(TARGET_DIRS[tool] + "/"):
+                session.apply(unit, unit.kit_text())
+        for name in project_skills:  # project-only skills get mirrored too
+            shutil.copytree(root / ".agents/skills" / name, root / TARGET_DIRS[tool] / name)
+        save_receipt(root, session.receipt)
+        print(c(f"Skills mirrored into {TARGET_DIRS[tool]}/ "
+                f"({len(project_skills)} project-only skill(s) copied too).", "1"))
+    else:
+        if tool in DEFAULT_TARGETS:
+            die(f"{tool} is a default target and cannot be removed")
+        if tool not in receipt["targets"]:
+            die(f"{tool} is not a target")
+        for uid, rec in list(receipt["units"].items()):
+            if rec["path"].startswith(TARGET_DIRS[tool] + "/"):
+                unit_from_record(root, uid, rec).write(None)
+                receipt["units"].pop(uid)
+        receipt["targets"].remove(tool)
+        save_receipt(root, receipt)
+        leftover = root / TARGET_DIRS[tool]
+        if leftover.exists():
+            print(f"Project-only skills remain in {TARGET_DIRS[tool]}/; delete them by hand if unwanted.")
+        print(c(f"Removed target {tool}.", "1"))
+    return 0
+
+
+def cmd_packs(args) -> int:
+    for name in available_packs():
+        meta = pack_meta(name)
+        req = f" (requires {', '.join(meta['requires'])})" if meta.get("requires") else ""
+        print(f"{name:16} {meta.get('description', '')}{req}")
+    return 0
+
+
+HOME_SKILL_DIRS = [".agents/skills", ".claude/skills", ".config/opencode/skills", ".factory/skills",
+                   ".kilo/skills", ".grok/skills", ".cursor/skills", ".kiro/skills", ".copilot/skills",
+                   ".kimi-code/skills", ".kimi/skills", ".qwen/skills", ".opencode/skills"]
+VENDOR_MANAGED = {"synced", ".trash", ".system"}
+
+
+def cmd_doctor(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root)
+    problems = 0
+    prompter = Prompter()
+
+    def ok(msg): print(c("  ok    ", "32") + msg)
+    def bad(msg, fix=None):
+        nonlocal problems
+        problems += 1
+        print(c("  FIX   ", "31") + msg + (f"\n        → {fix}" if fix else ""))
+    def note(msg): print(c("  note  ", "33") + msg)
+
+    print(c("Kit", "1"))
+    which = shutil.which("kit")
+    ok(f"kit on PATH ({which})") if which else bad("kit is not on PATH",
+                                                    f"ln -s {KIT}/bin/kit ~/.local/bin/kit")
+    dirty = git("status", "--porcelain", cwd=KIT, check=False)
+    ok("kit checkout is clean") if not dirty else bad(f"{KIT} has uncommitted changes",
+                                                     f"git -C {KIT} status")
+    upstream = git("rev-parse", "--abbrev-ref", "@{u}", cwd=KIT, check=False)
+    if upstream:
+        behind = git("rev-list", "--count", "HEAD..@{u}", cwd=KIT, check=False)
+        ahead = git("rev-list", "--count", "@{u}..HEAD", cwd=KIT, check=False)
+        (ok if behind in ("", "0") else bad)(f"kit vs {upstream}: {behind or 0} behind, {ahead or 0} "
+                                             "ahead (as of the last fetch)")
+    else:
+        note("the kit has no upstream remote yet (push it to a private GitHub repo)")
+
+    print(c("\nThis repository", "1"))
+    if receipt is None:
+        bad("no .agent-kit.lock", "kit init (new repository) or kit adopt (existing setup)")
+    else:
+        session = Session(root, receipt)
+        states: dict[str, int] = {}
+        for _, state, _ in session.classified():
+            states[state] = states.get(state, 0) + 1
+        missing = sum(1 for u, s, _ in session.classified() if s in ("new",))
+        ok(f"receipt: packs {', '.join(receipt['packs'])}; {len(receipt['units'])} tracked entries")
+        pending = {k: v for k, v in states.items() if k not in ("ok",)}
+        if pending:
+            note("differences: " + ", ".join(f"{v} {STATE_TEXT[k]}" for k, v in pending.items())
+                 + " (kit status)")
+        if missing:
+            bad(f"{missing} kit entries are missing here", "kit sync")
+        if report_mirror_drift(session):
+            bad("skill copies differ between tool folders", "edit one copy, then copy it over the others")
+    check = root / "tools/check-agent-setup"
+    if check.is_file():
+        result = subprocess.run([str(check)], cwd=root, capture_output=True, text=True)
+        last = (result.stdout.strip().splitlines() or ["(no output)"])[-1]
+        ok(f"tools/check-agent-setup: {last}") if result.returncode == 0 else bad(
+            "tools/check-agent-setup fails:\n" + "\n".join(
+                "          " + l for l in result.stdout.splitlines() if l.startswith("FAIL")))
+
+    print(c("\nThis machine", "1"))
+    codex_cfg = Path.home() / ".codex/config.toml"
+    if shutil.which("codex"):
+        cfg = load_toml(codex_cfg) if codex_cfg.is_file() else {}
+        trust = cfg.get("projects", {}).get(str(root), {}).get("trust_level")
+        if trust == "trusted":
+            ok("Codex trusts this repository (its rules and config load)")
+        else:
+            bad("Codex does not trust this repository, so .codex/config.toml and .codex/rules are ignored",
+                "start codex here and accept the trust prompt, or kit doctor --fix")
+            if args.fix and prompter.ask("Add a trust entry to ~/.codex/config.toml?", "yn") == "y":
+                with codex_cfg.open("a") as fh:
+                    fh.write(f'\n[projects."{root}"]\ntrust_level = "trusted"\n')
+                print("        added")
+        approvals = read_text(Path.home() / ".codex/rules/default.rules")
+        if approvals and approvals.strip():
+            rules = re.findall(r"pattern\s*=\s*(\[[^\]]*\])[^)]*?decision\s*=\s*\"(\w+)\"", approvals, re.S)
+            note(f"Codex has {len(rules)} permanent approval rule(s) in ~/.codex/rules/default.rules "
+                 "(global, every repository):")
+            for pattern, decision in rules:
+                try:
+                    shown = " ".join(json.loads(pattern))
+                except (json.JSONDecodeError, TypeError):
+                    shown = pattern
+                print(f"          {decision:9} {shown}")
+    else:
+        note("codex not installed; skipped Codex checks")
+
+    found: dict[str, list[str]] = {}
+    for rel in HOME_SKILL_DIRS:
+        directory = Path.home() / rel
+        if directory.is_dir():
+            names = [e.name for e in sorted(directory.iterdir())
+                     if e.name not in VENDOR_MANAGED and (e.is_dir() or e.is_symlink())]
+            if names:
+                found[f"~/{rel}"] = names
+    if found:
+        total = sum(len(v) for v in found.values())
+        bad(f"{total} personal skill(s) in {len(found)} home folder(s); Claude Code prefers these over "
+            "the project's and they drift:\n" + "\n".join(
+                f"          {folder} ({len(names)}): {', '.join(names)}" for folder, names in found.items()),
+            "move anything worth keeping into the kit (kit push --new), then delete them")
+    else:
+        ok("no personal skills in home folders")
+    oc = read_text(Path.home() / ".config/opencode/opencode.jsonc")
+    if oc and re.search(r"~/\.(agents|claude)/skills", oc):
+        note("~/.config/opencode/opencode.jsonc still lists home skill folders in skills.paths")
+
+    if receipt and "traycer" in receipt["packs"]:
+        if shutil.which("traycer"):
+            ok("traycer CLI on PATH")
+            for dest, text in home_installs(receipt["packs"]):
+                if read_text(dest) == text:
+                    ok(f"{dest} matches the kit")
+                else:
+                    bad(f"{dest} differs from the kit", "kit sync (or kit doctor --fix)")
+                    if args.fix:
+                        sync_home(receipt["packs"], prompter)
+        else:
+            note("traycer pack installed but Traycer is not on this machine; its files stay inert")
+
+    print()
+    print(c(f"{problems} thing(s) to fix.", "31" if problems else "32"))
+    return 1 if problems else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="kit", description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=__doc__.split("\n\n", 1)[1])
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("init"); p.add_argument("--with", dest="with_", action="append")
+    p = sub.add_parser("adopt"); p.add_argument("--with", dest="with_", action="append")
+    p.add_argument("--dry-run", action="store_true")
+    sub.add_parser("status")
+    p = sub.add_parser("sync"); p.add_argument("--discard", action="store_true")
+    p.add_argument("--yes", action="store_true", help="answer yes to updates and installs (never to discards)")
+    p = sub.add_parser("push"); p.add_argument("paths", nargs="+"); p.add_argument("--new", action="store_true")
+    p.add_argument("--pack"); p.add_argument("--yes", action="store_true")
+    p = sub.add_parser("add"); p.add_argument("pack"); p.add_argument("--yes", action="store_true")
+    p = sub.add_parser("remove"); p.add_argument("pack"); p.add_argument("--yes", action="store_true")
+    p = sub.add_parser("target"); p.add_argument("action", choices=["add", "remove"]); p.add_argument("tool")
+    sub.add_parser("packs")
+    p = sub.add_parser("doctor"); p.add_argument("--fix", action="store_true")
+    args = parser.parse_args()
+    handlers = {"init": cmd_init, "adopt": cmd_adopt, "status": cmd_status, "sync": cmd_sync,
+                "push": cmd_push, "add": cmd_add, "remove": cmd_remove, "target": cmd_target,
+                "packs": cmd_packs, "doctor": cmd_doctor}
+    return handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

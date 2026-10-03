@@ -1,0 +1,2 @@
+description = "Playwright MCP server (browser control) for Claude Code, Codex and opencode."
+requires = []

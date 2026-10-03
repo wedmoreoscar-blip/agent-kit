@@ -1,0 +1,9 @@
+description = "Delegation through Traycer agents and worktrees. Inert on machines without Traycer."
+requires = []
+
+# Files installed on this machine (not in the repository) by `kit sync`, after a diff and a prompt.
+# Each source is "<pack>:<path inside that pack>"; several sources are concatenated.
+[[home]]
+dest = ".traycer/agent-selection-guide.md"
+sources = ["core:files/docs/workflows/agent_selection.md", "traycer:files/docs/workflows/delegation_traycer.md"]
+only_if_exists = ".traycer"

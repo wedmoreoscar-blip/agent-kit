@@ -1,0 +1,2 @@
+description = "Codex TUI as orchestrator through an artifact-ledger A2A hub. Traycer only."
+requires = ["traycer"]

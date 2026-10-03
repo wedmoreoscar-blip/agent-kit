@@ -1,0 +1,13 @@
+# Claude Code hooks merged into .claude/settings.json by `kit sync`.
+
+[[PreToolUse]]
+matcher = "Bash|Agent|Task"
+command = "\"${CLAUDE_PROJECT_DIR}/tools/writespec-guard\""
+timeout = 10
+statusMessage = "Checking writespec compliance..."
+
+[[PreToolUse]]
+matcher = "Bash"
+command = "\"${CLAUDE_PROJECT_DIR}/tools/spend-guard\""
+timeout = 10
+statusMessage = "Checking delegation spend ledger..."

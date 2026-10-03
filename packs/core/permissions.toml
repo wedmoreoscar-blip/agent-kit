@@ -1,0 +1,14 @@
+# Generic permission entries. `kit sync` translates them into .claude/settings.json,
+# opencode.json and .codex/rules/kit.rules. Project-specific entries (deploy commands, remote
+# migrations) are added by hand to those files and are never touched by the kit.
+
+[read]
+# Exact file names, matched in any directory. Claude's deny rules beat its allow rules, so an
+# exception like .env.example is expressed by not listing it.
+deny = [".env", ".env.local", ".env.development", ".env.production", ".env.test", ".env.staging"]
+
+[bash]
+# Shell-style prefixes. A trailing " *" means "with any arguments". Codex rules cannot express
+# a "*" anywhere else; such entries are listed as comments in .codex/rules/kit.rules.
+deny = ["git push", "git push *", "git -C * push *"]
+ask = []
