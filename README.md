@@ -51,6 +51,7 @@ packs/relay/       Codex TUI orchestration through an A2A hub (needs traycer)
 packs/mcp-*/       one MCP server each, written into all three clients' configs
 templates/         starter files `kit init` copies once; the project owns them afterwards
 docs/DESIGN.md     why it works the way it does
+docs/COMMANDS.md   every kit command, one line each
 ```
 
 ## Rules
