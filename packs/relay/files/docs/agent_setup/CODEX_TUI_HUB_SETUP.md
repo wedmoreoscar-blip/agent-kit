@@ -15,7 +15,7 @@ every queued command waits for the user to prompt the hub by hand.
 | Name | `codex-tui-a2a-hub` |
 | Interface | GUI / Chat |
 | Harness | OpenCode |
-| Model | DeepSeek V4 Flash (`deepseek:deepseek-v4-flash` in Traycer syntax) |
+| Model | DeepSeek V4.1 Flash through OpenRouter, pinned (`openrouter:deepseek/deepseek-v4.1-flash` in Traycer syntax; authenticate OpenRouter with `opencode providers login`) |
 | Reasoning effort | `max` |
 | Permission mode | `full_access` |
 | Primary working directory | Absolute repository root (main checkout) |
@@ -54,7 +54,7 @@ The ledger does not need to exist yet. `$codex-tui-relay` creates it after disco
 
 1. Confirm the first turn returns exactly `HUB_READY`, performs no A2A mutation and makes no
    repository change.
-2. Confirm the Traycer GUI shows OpenCode / DeepSeek V4 Flash / max / `full_access`; do not treat the
+2. Confirm the Traycer GUI shows OpenCode / DeepSeek V4.1 Flash (OpenRouter) / max / `full_access`; do not treat the
    hub's self-report as model evidence.
 3. If creation timed out or the provider, model or effort is wrong, retire the hub through Traycer's
    UI and create it again.

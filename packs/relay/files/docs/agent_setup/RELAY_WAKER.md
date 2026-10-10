@@ -27,7 +27,7 @@ cannot cause a future turn.
 | Component | Kind | Costs credits | Runs when |
 | --- | --- | --- | --- |
 | Codex TUI orchestrator | Agent (terminal) | Yes | When prompted |
-| `codex-tui-a2a-hub` | Agent (OpenCode GUI, DeepSeek V4 Flash) | Yes | Only when messaged |
+| `codex-tui-a2a-hub` | Agent (OpenCode GUI, DeepSeek V4.1 Flash) | Yes | Only when messaged |
 | `a2a-hub-waker` | Agent, idle after setup | No | Once at creation, then never |
 | Relay ledger | Artifact (one markdown file) | No | It is a file |
 | `tools/relay-hub-waker` | Background OS process | No | Continuously, once started |
@@ -99,12 +99,12 @@ system is verified in parts but not as a whole.
    intact.
 2. Open a Traycer epic and note its id. **Do not close that tab** — an epic is reachable only through
    an open tab, and there is no epic list or `traycer epic` command to recover it.
-3. Create the hub per `CODEX_TUI_HUB_SETUP.md`: name `codex-tui-a2a-hub`, GUI, OpenCode, DeepSeek V4
-   Flash, effort `max`, `full_access`, working directory the repository root. It must reply exactly
-   `HUB_READY` and change nothing.
+3. Create the hub per `CODEX_TUI_HUB_SETUP.md`: name `codex-tui-a2a-hub`, GUI, OpenCode, DeepSeek
+   V4.1 Flash via OpenRouter, effort `max`, `full_access`, working directory the repository root.
+   It must reply exactly `HUB_READY` and change nothing.
 4. Create `a2a-hub-waker`. Name only.
-5. Start Codex TUI and run `$codex-tui-relay`. It creates and validates the ledger and registers the
-   hub. Wait for `READY`.
+5. Start Codex TUI on GPT 6 Astra or GPT 6.1 Sol (`docs/workflows/agent_selection.md`) and run
+   `$codex-tui-relay`. It creates and validates the ledger and registers the hub. Wait for `READY`.
 6. Run `tools/waker-daemon-start`.
 7. Run the full no-code smoke test in `CODEX_TUI_MESSAGE_RELAY.md`.
 

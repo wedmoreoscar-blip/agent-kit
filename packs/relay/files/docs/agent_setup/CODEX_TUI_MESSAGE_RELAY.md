@@ -16,7 +16,7 @@ gates and change-safety rules remain authoritative.
 ```mermaid
 flowchart LR
   C["Codex TUI orchestrator"] -->|"append commands / replies"| L["One epic-scoped\nartifact ledger"]
-  W["relay-hub-waker daemon"] -->|"Check the relay ledger"| H["OpenCode GUI A2A hub\nDeepSeek V4 Flash · max"]
+  W["relay-hub-waker daemon"] -->|"Check the relay ledger"| H["OpenCode GUI A2A hub\nDeepSeek V4.1 Flash · max"]
   L -.->|"pending command appears"| W
   U["the user"] -.->|"manual fallback"| H
   H -->|"read / claim / execute / append"| L
@@ -102,7 +102,7 @@ For a long commission or reply, write the exact body to a temporary file and pas
 3. List the epic's agents read-only and locate exactly one `codex-tui-a2a-hub`.
 4. If the hub is absent or ambiguous, stop with the one-time setup instructions above. The skill
    cannot create the hub because Codex TUI is not an A2A sender.
-5. Confirm the hub is OpenCode GUI / DeepSeek V4 Flash / max / `full_access` and inspect its
+5. Confirm the hub is OpenCode GUI / DeepSeek V4.1 Flash / max / `full_access` and inspect its
    transcript for the clean `HUB_READY` setup.
 6. Append `agent.registered` if this hub ID is not already registered.
 7. Run the ledger state scan and report pending commands, unresolved claims, ambiguous operations

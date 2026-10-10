@@ -38,7 +38,7 @@ enumerated in `RELAY_WAKER.md`. Codex can create none of them and must hand them
    `codex-tui-a2a-hub`. Never create, configure, send to, or impersonate the hub from Codex TUI.
    If it is missing or ambiguous, stop and return the one-time settings and clean initialization
    prompt from `CODEX_TUI_HUB_SETUP.md`, with absolute repository, artifact and ledger paths.
-4. Confirm the hub is OpenCode GUI / DeepSeek V4 Flash / max / `full_access` in the repository root
+4. Confirm the hub is OpenCode GUI / DeepSeek V4.1 Flash / max / `full_access` in the repository root
    and has a clean `HUB_READY` initialization transcript. Do not trust the hub's self-report as
    provider/model evidence. If any check is unresolved, report not ready.
 5. If the real hub ID has not been registered, append one `agent.registered` event with actor
