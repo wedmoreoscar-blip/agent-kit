@@ -11,8 +11,10 @@ spawn commands, surfaces and flags for it.
 
 ## Orchestrator
 
-Claude Code on **Claude Opus 5.5** (or **Claude Fable 5.2**) is the default orchestrator. It plans,
-writes specs, checks returned diffs, integrates, and commits. Orchestration, spec authorship, and
+Claude Code on **Claude Opus 5.5** is the default orchestrator; **Claude Fable 5.1** may stand in.
+Claude Fable 5.2 is the intended Fable once Anthropic releases it (unreleased as of 2026-10-10;
+check before assuming it exists). The orchestrator plans, writes specs, checks returned diffs,
+integrates, and commits. Orchestration, spec authorship, and
 acceptance are never delegated.
 
 Another client may orchestrate only where an installed pack explicitly authorizes it. On the
@@ -28,7 +30,7 @@ only once that gate says delegate.
 
 One implementer model runs everything: deterministic implementation, refactors, visual work,
 browser-driven acceptance. There is no separate "visual" agent; the implementer models in use all
-ingest images, so the only live axis is cost.
+ingest images (DeepSeek V4.1 Flash reads images natively), so the only live axis is cost.
 
 1. **Claude Haiku 5.5 through the Claude Code CLI, at `max` effort, is the default** (the user's
    choice, 2026-10-10). Always set the effort explicitly; never let it fall back to a lower default.
