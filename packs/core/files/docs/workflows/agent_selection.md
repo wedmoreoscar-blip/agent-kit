@@ -11,12 +11,14 @@ spawn commands, surfaces and flags for it.
 
 ## Orchestrator
 
-Claude Code on the strongest available Claude model is the default orchestrator. It plans, writes
-specs, checks returned diffs, integrates, and commits. Orchestration, spec authorship, and
+Claude Code on **Claude Opus 5.5** (or **Claude Fable 5.2**) is the default orchestrator. It plans,
+writes specs, checks returned diffs, integrates, and commits. Orchestration, spec authorship, and
 acceptance are never delegated.
 
-Another client may orchestrate only where an installed pack explicitly authorizes it (for example
-the `relay` pack's Codex TUI route).
+Another client may orchestrate only where an installed pack explicitly authorizes it. On the
+`relay` pack's Codex TUI route, the orchestrator is **GPT 6 Astra** or **GPT 6.1 Sol** in Codex.
+
+Never orchestrate on an older model of these families without the user saying so.
 
 ## Implementers
 
