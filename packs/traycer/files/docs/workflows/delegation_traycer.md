@@ -46,9 +46,9 @@ traycer agent create --harness claude --model haiku \
 Only on the user's explicit instruction to switch, one of:
 
 ```
-traycer agent create --harness codex --model gpt-5.6-luna \
+traycer agent create --harness codex --model gpt-6-luna \
   --reasoning-effort max --surface gui --cwd <worktree> --permission-mode full_access
-traycer agent create --harness opencode --model deepseek:deepseek-v4-flash-vision-exp \
+traycer agent create --harness opencode --model openrouter:deepseek/deepseek-v4.1-flash \
   --reasoning-effort max --surface gui --cwd <worktree> --permission-mode full_access
 ```
 
@@ -58,11 +58,13 @@ traycer agent create --harness opencode --model deepseek:deepseek-v4-flash-visio
   explicitly every time.
 - `haiku` is Traycer's alias for the current Claude Haiku; its `claude` harness lists no pinned
   Haiku 5.5 id. Step 5 confirms the alias really resolved to `claude-haiku-5-5`.
-- Effort values differ by harness (`low|high|max` for the DeepSeek model, `low|medium|high|xhigh|max`
-  for Haiku and Luna). `max` is valid on all three.
-- opencode's own model syntax uses a slash (`deepseek/deepseek-v4-flash-vision-exp`); Traycer's
-  `--model` uses a colon (`deepseek:deepseek-v4-flash-vision-exp`). Both are correct in their place.
-  DeepSeek is opencode's built-in provider, authenticated with `opencode providers login`.
+- Effort values differ by harness (`low|high|max` for DeepSeek V4.1 Flash,
+  `low|medium|high|xhigh|max` for Haiku and Luna). `max` is valid on all three.
+- DeepSeek V4.1 Flash is reached through OpenRouter, pinned by name, not through DeepSeek's own API
+  (which offers only an unpinned `deepseek-flash` alias). opencode's own model syntax is
+  `openrouter/deepseek/deepseek-v4.1-flash`; Traycer's `--model` puts a colon after the provider
+  (`openrouter:deepseek/deepseek-v4.1-flash`). Both are correct in their place. Authenticate
+  OpenRouter in opencode with `opencode providers login`.
 
 ### Surface
 
@@ -95,8 +97,9 @@ the wrong provider, model and effort. So, every time:
 2. After the first turn, verify the real model. For claude: the session transcript (under
    `~/.claude/projects/<worktree path, slashes as dashes>/`) shows `"model":"claude-haiku-5-5"` on
    the agent's replies. For opencode: `opencode session list` →
-   `opencode export <sessionID>`, and check `providerID`, `modelID`, `variant`. For codex: check the
-   session rollout's model field reads `gpt-5.6-luna`, not a model the repository config supplies.
+   `opencode export <sessionID>`, and check `providerID` reads `openrouter` and `modelID`
+   reads `deepseek/deepseek-v4.1-flash`, with `variant` `max`. For codex: check the session
+   rollout's model field reads `gpt-6-luna`, not a model the repository config supplies.
 
 ## Step 8 — send with `--expect-reply`
 
