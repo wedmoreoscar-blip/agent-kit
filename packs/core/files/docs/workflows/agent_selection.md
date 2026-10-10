@@ -28,18 +28,17 @@ One implementer model runs everything: deterministic implementation, refactors, 
 browser-driven acceptance. There is no separate "visual" agent; the implementer models in use all
 ingest images, so the only live axis is cost.
 
-1. **GPT-5.6 Luna via Codex is the default** where Codex is available, because it bills against a
-   subscription already held: its output is already paid for.
-2. **DeepSeek V4 Flash Vision Exp via opencode replaces it wholesale only when the user explicitly
-   says to switch**, typically because the Codex subscription is exhausted. Never infer the switch
-   from a task looking cheap, a wave being large, or the default stalling; ask if you think it is
-   due. Once switched, it is the default for everything until the user switches back. Always the
-   Vision Exp variant, never plain `deepseek-v4-flash`: same price, same text performance, plus
-   image input.
+1. **Claude Haiku 5.5 through the Claude Code CLI, at `max` effort, is the default** (the user's
+   choice, 2026-10-10). Always set the effort explicitly; never let it fall back to a lower default.
+2. **GPT-5.6 Luna via Codex or DeepSeek V4 Flash Vision Exp via opencode replaces it wholesale only
+   when the user explicitly says to switch.** Never infer the switch from a task looking cheap, a
+   wave being large, or the default stalling; ask if you think it is due. Once switched, that model
+   is the default for everything until the user switches back. For DeepSeek, always the Vision Exp
+   variant, never plain `deepseek-v4-flash`: same price, same text performance, plus image input.
 3. **With only native subagents available** (no orchestration tool, or a collaborator's machine),
-   the implementer is the orchestrating client's own subagent. Where the client lets you choose
-   the subagent's model, pick the cheapest one that can do the work; spec quality matters more
-   than model size for mechanical work.
+   the implementer is the orchestrating client's own subagent. In Claude Code that is Haiku at
+   `max` effort, matching the default. In another client, pick the cheapest model that can do the
+   work; spec quality matters more than model size for mechanical work.
 
 ### Reuse warm worktrees and agents before creating anything
 
