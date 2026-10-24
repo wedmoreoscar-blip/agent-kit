@@ -40,16 +40,20 @@ Default implementer (Claude Haiku 5.5 through the Claude Code CLI):
 
 ```
 traycer agent create --harness claude --model haiku \
-  --reasoning-effort max --surface gui --cwd <worktree> --permission-mode full_access
+  --reasoning-effort max --surface tui --cwd <worktree> --permission-mode full_access
 ```
 
 Only on the user's explicit instruction to switch, one of:
 
 ```
+# GPT 6 Luna
 traycer agent create --harness codex --model gpt-6-luna \
   --reasoning-effort max --surface gui --cwd <worktree> --permission-mode full_access
-traycer agent create --harness opencode --model openrouter:deepseek/deepseek-v4.1-flash \
-  --reasoning-effort max --surface gui --cwd <worktree> --permission-mode full_access
+
+# DeepSeek V4.1 Flash in Claude Code: mark the worktree first, then create a claude agent
+echo deepseek > <worktree>/.agent-backend
+traycer agent create --harness claude --model haiku \
+  --reasoning-effort max --surface tui --cwd <worktree> --permission-mode full_access
 ```
 
 - **`--reasoning-effort max` is required, not redundant.** Without it the agent runs at a lower
@@ -58,18 +62,35 @@ traycer agent create --harness opencode --model openrouter:deepseek/deepseek-v4.
   explicitly every time.
 - `haiku` is Traycer's alias for the current Claude Haiku; its `claude` harness lists no pinned
   Haiku 5.5 id. Step 5 confirms the alias really resolved to `claude-haiku-5-5`.
-- Effort values differ by harness (`low|high|max` for DeepSeek V4.1 Flash,
-  `low|medium|high|xhigh|max` for Haiku and Luna). `max` is valid on all three.
-- DeepSeek V4.1 Flash is reached through OpenRouter, pinned by name, not through DeepSeek's own API
-  (which offers only an unpinned `deepseek-flash` alias). opencode's own model syntax is
-  `openrouter/deepseek/deepseek-v4.1-flash`; Traycer's `--model` puts a colon after the provider
-  (`openrouter:deepseek/deepseek-v4.1-flash`). Both are correct in their place. Authenticate
-  OpenRouter in opencode with `opencode providers login`.
+- `max` is valid on every implementer harness and model.
+
+### DeepSeek in Claude Code: `claude-router`
+
+Traycer has one Claude Code binary and one environment per harness, and refuses a second Claude
+profile on the same account, so a DeepSeek agent cannot be configured per agent inside Traycer.
+The traycer pack instead installs two scripts to `~/.local/bin` (`kit sync`):
+
+- `claude-router`: **set it as Traycer's Claude Code binary** (Settings ▸ Providers ▸ Claude Code ▸
+  custom path `~/.local/bin/claude-router`). For each launch it runs `deepseek` only when the
+  working directory is a **linked worktree** whose root holds `.agent-backend` containing
+  `deepseek`; everything else, including a main checkout that has a marker, runs plain `claude`, so
+  the orchestrator is never rerouted. In DeepSeek mode it replaces any `--model` with
+  `deepseek-flash`, exits in seconds if `api.deepseek.com` is unreachable, and never falls back to
+  Claude (that would spend the subscription). Every launch is logged to
+  `~/.local/state/claude-router.log`.
+- `deepseek`: Claude Code pointed at `https://api.deepseek.com/anthropic` with every model alias
+  mapped to `deepseek-flash` (DeepSeek's API id for V4.1 Flash) at `max` effort. It reads the bare
+  key from `$DEEPSEEK_API_KEY_FILE`, or `~/.config/deepseek/api_key`; agents never read that file.
+
+Repositories gitignore `.agent-backend` (core `gitignore_block`). The marker lives only in
+implementer worktrees; remove it, or the worktree, when the agent is done.
 
 ### Surface
 
-Always `--surface gui` for implementers. Agent-to-agent messaging on `--surface tui` is
-Claude-Code-only; `codex` and `opencode` fail `agent.create` with `TARGET_TUI_UNSUPPORTED`.
+Claude Code implementers (Haiku, or DeepSeek through `claude-router`) use `--surface tui` (the
+user's preference, 2026-10-25; agent-to-agent messaging verified both ways on a DeepSeek TUI agent).
+`codex` and `opencode` must use `--surface gui`: they fail `agent.create` on `tui` with
+`TARGET_TUI_UNSUPPORTED`.
 Traycer's docs list all three as terminal-capable, which covers harnesses backing a human-driven
 terminal session, not agent-to-agent messaging.
 
@@ -96,9 +117,8 @@ the wrong provider, model and effort. So, every time:
    not dispatch to it.
 2. After the first turn, verify the real model. For claude: the session transcript (under
    `~/.claude/projects/<worktree path, slashes as dashes>/`) shows `"model":"claude-haiku-5-5"` on
-   the agent's replies. For opencode: `opencode session list` →
-   `opencode export <sessionID>`, and check `providerID` reads `openrouter` and `modelID`
-   reads `deepseek/deepseek-v4.1-flash`, with `variant` `max`. For codex: check the session
+   the agent's replies; for a DeepSeek agent, `~/.local/state/claude-router.log` has a `deepseek` line
+   for the worktree and the replies show `"model":"deepseek-flash"`. For codex: check the session
    rollout's model field reads `gpt-6-luna`, not a model the repository config supplies.
 
 ## Step 8 — send with `--expect-reply`

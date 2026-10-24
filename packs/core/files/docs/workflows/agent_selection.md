@@ -34,8 +34,9 @@ ingest images (DeepSeek V4.1 Flash reads images natively), so the only live axis
 
 1. **Claude Haiku 5.5 through the Claude Code CLI, at `max` effort, is the default** (the user's
    choice, 2026-10-10). Always set the effort explicitly; never let it fall back to a lower default.
-2. **GPT 6 Luna via Codex, or DeepSeek V4.1 Flash via opencode (through OpenRouter, pinned by
-   name), replaces it wholesale only when the user explicitly says to switch.** Never infer the
+2. **GPT 6 Luna via Codex, or DeepSeek V4.1 Flash in the Claude Code CLI (DeepSeek's own API,
+   routed per worktree by `claude-router`; see `delegation_traycer.md`), replaces it wholesale only
+   when the user explicitly says to switch.** Never infer the
    switch from a task looking cheap, a wave being large, or the default stalling; ask if you think
    it is due. Once switched, that model is the default for everything until the user switches back.
    Never fall back to an older model of either family (GPT-5.6 Luna, DeepSeek V4 Flash) without the
