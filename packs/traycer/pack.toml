@@ -7,3 +7,17 @@ requires = []
 dest = ".traycer/agent-selection-guide.md"
 sources = ["core:files/docs/workflows/agent_selection.md", "traycer:files/docs/workflows/delegation_traycer.md"]
 only_if_exists = ".traycer"
+
+# Per-worktree model routing for Traycer's Claude Code harness (set Traycer's Claude Code binary to
+# a custom path: ~/.local/bin/claude-router). See docs/workflows/delegation_traycer.md.
+[[home]]
+dest = ".local/bin/claude-router"
+sources = ["traycer:home/bin/claude-router"]
+executable = true
+only_if_exists = ".traycer"
+
+[[home]]
+dest = ".local/bin/deepseek"
+sources = ["traycer:home/bin/deepseek"]
+executable = true
+only_if_exists = ".traycer"

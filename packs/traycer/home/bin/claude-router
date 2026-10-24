@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Traycer's Claude Code binary. Routes one agent to DeepSeek or to normal Claude Code.
+#
+# DeepSeek only when the agent's working directory is inside a *linked git worktree*
+# (its .git is a file, not a directory) whose root holds a file `.agent-backend`
+# containing exactly `deepseek`. Anything else, including any error, runs plain `claude`.
+# The main checkout (.git is a directory) is never routed, so the orchestrator stays on
+# Anthropic.
+
+REAL_CLAUDE="$HOME/.local/bin/claude"
+DEEPSEEK="$HOME/.local/bin/deepseek"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/claude-router.log"
+
+backend=claude
+dir="$PWD"
+while [ -n "$dir" ]; do
+    if [ -e "$dir/.git" ]; then
+        if [ -f "$dir/.git" ] && [ -f "$dir/.agent-backend" ] \
+            && [ "$(tr -d '[:space:]' < "$dir/.agent-backend" 2>/dev/null)" = "deepseek" ] \
+            && [ -x "$DEEPSEEK" ]; then
+            backend=deepseek
+        fi
+        break
+    fi
+    [ "$dir" = "/" ] && break
+    dir="$(dirname "$dir")"
+done
+
+{ mkdir -p "$(dirname "$LOG")" && printf '%s\t%s\t%s\n' "$(date -Is)" "$backend" "$PWD" >> "$LOG"; } 2>/dev/null
+
+if [ "$backend" = deepseek ]; then
+    # Fail fast when DeepSeek is unreachable (for example the BT late-night DNS filter),
+    # instead of Claude Code's slow retries. Never fall back to Claude: that would spend Pro.
+    code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' https://api.deepseek.com/ 2>/dev/null)"
+    if [ "$code" = "000" ] || [ -z "$code" ]; then
+        echo "claude-router: api.deepseek.com is unreachable (DNS filter or network). Not starting; not falling back to Claude." >&2
+        printf '%s\t%s\t%s\n' "$(date -Is)" "deepseek-unreachable" "$PWD" >> "$LOG" 2>/dev/null
+        exit 1
+    fi
+    # Force the model: whatever --model Traycer passes (an opus alias would map to
+    # deepseek-v4-pro on DeepSeek's side), use deepseek-flash.
+    args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --model) shift; [ $# -gt 0 ] && shift; args+=(--model deepseek-flash) ;;
+            --model=*) shift; args+=(--model deepseek-flash) ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    exec "$DEEPSEEK" "${args[@]}"
+fi
+
+exec "$REAL_CLAUDE" "$@"

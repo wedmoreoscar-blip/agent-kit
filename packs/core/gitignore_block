@@ -4,6 +4,8 @@
 CLAUDE.local.md
 .claude/settings.local.json
 .claude/agent-memory-local/
+# Per-worktree marker read by ~/.local/bin/claude-router (traycer pack).
+.agent-backend
 # Working captures from a visual check; milestone captures and notes.md are committed.
 docs/visual/screenshots/*/work/
 # Windows alternate-data-stream files created when downloads are unpacked into WSL.

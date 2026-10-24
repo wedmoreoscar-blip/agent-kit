@@ -544,7 +544,7 @@ def build_units(root: Path, packs: list[str], targets: list[str]) -> list[Unit]:
     return list(seen.values())
 
 
-def home_installs(packs: list[str]) -> list[tuple[Path, str]]:
+def home_installs(packs: list[str]) -> list[tuple[Path, str, bool]]:
     installs = []
     for pack in packs:
         for entry in pack_meta(pack).get("home", []):
@@ -554,7 +554,8 @@ def home_installs(packs: list[str]) -> list[tuple[Path, str]]:
             for source in entry["sources"]:
                 src_pack, rel = source.split(":", 1)
                 parts.append((read_text(PACKS / src_pack / rel) or "").rstrip("\n"))
-            installs.append((Path.home() / entry["dest"], "\n\n".join(parts) + "\n"))
+            installs.append((Path.home() / entry["dest"], "\n\n".join(parts) + "\n",
+                             bool(entry.get("executable"))))
     return installs
 
 
@@ -701,7 +702,7 @@ def cmd_status(args) -> int:
     else:
         print(c("\nEverything the kit installed is up to date.", "32"))
     report_mirror_drift(session)
-    for dest, text in home_installs(receipt["packs"]):
+    for dest, text, _ in home_installs(receipt["packs"]):
         if read_text(dest) != text:
             print(describe(Unit(root, "home", str(dest), None), "update").replace(
                 "kit updated", "machine file differs") + " (kit sync installs it)")
@@ -803,7 +804,7 @@ def ask_with_diff(prompter: Prompter, unit: Unit, state: str, question: str) -> 
 
 
 def sync_home(packs: list[str], prompter: Prompter) -> None:
-    for dest, text in home_installs(packs):
+    for dest, text, executable in home_installs(packs):
         current = read_text(dest)
         if current == text:
             continue
@@ -811,7 +812,7 @@ def sync_home(packs: list[str], prompter: Prompter) -> None:
             "kit updated", "machine file differs"))
         show_diff(current, text, str(dest), "kit")
         if prompter.ask(f"Write {dest}?", "ynq") == "y":
-            write_text(dest, text)
+            write_text(dest, text, executable)
 
 
 def validate_configs(root: Path) -> list[str]:
@@ -1289,7 +1290,7 @@ def cmd_doctor(args) -> int:
     if receipt and "traycer" in receipt["packs"]:
         if shutil.which("traycer"):
             ok("traycer CLI on PATH")
-            for dest, text in home_installs(receipt["packs"]):
+            for dest, text, _ in home_installs(receipt["packs"]):
                 if read_text(dest) == text:
                     ok(f"{dest} matches the kit")
                 else:

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Claude Code on DeepSeek V4.1 Flash, through DeepSeek's Anthropic-compatible API.
+# Installed to ~/.local/bin/deepseek by the agent kit's traycer pack; claude-router calls it.
+#
+# The API key is read from the file named by DEEPSEEK_API_KEY_FILE, or from
+# ~/.config/deepseek/api_key (a symlink to wherever you keep the key is fine). The file holds the
+# bare key. It is read here, inside the process, and never printed.
+
+key_file="${DEEPSEEK_API_KEY_FILE:-$HOME/.config/deepseek/api_key}"
+if [ ! -r "$key_file" ]; then
+    echo "deepseek: no readable API key file at $key_file (set DEEPSEEK_API_KEY_FILE)." >&2
+    exit 1
+fi
+export ANTHROPIC_AUTH_TOKEN="$(tr -d '[:space:]' < "$key_file")"
+unset ANTHROPIC_API_KEY
+
+export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
+
+# deepseek-flash is DeepSeek's API id for V4.1 Flash (1017); deepseek-v4-flash is retired.
+export ANTHROPIC_MODEL="deepseek-flash"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-flash"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-flash"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-flash"
+export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-flash"
+
+export CLAUDE_CODE_EFFORT_LEVEL="max"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=800000
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+exec "$HOME/.local/bin/claude" "$@"
