@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Prepare one lane's integration branch to land on main when several orchestrator sessions share
+# this repository (docs/workflows/parallel_sessions.md). Lanes are the profile's [lanes.<name>] tables.
+#
+#   tools/land <lane>
+#
+# Under `tools/agent-lock resource-heavy` (so two sessions never run the full suite at once):
+#   1. creates the worktree .worktrees/integration-<lane> on branch integration-<lane> if missing
+#      (provisioned with tools/prepare-worktree);
+#   2. merges the current main into it (stops on a conflict: resolve it there, then rerun);
+#   3. checks that every file the branch changes belongs to the lane or is claimed by it
+#      (tools/claim check);
+#   4. runs `tools/test-project full` and `git diff --check main` there.
+# It does not move main. On success it prints the commands the orchestrator runs next, in the main
+# checkout. --ff-only is the real guard: if another session landed in between, it refuses, and you
+# rerun this script.
+set -euo pipefail
+
+lane="${1:-}"
+root="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+lanes="$("$root/tools/claim" lanes --names)"
+if [[ -z "$lane" ]] || ! grep -qx -- "$lane" <<<"$lanes"; then
+  echo "Usage: tools/land <lane>   (lanes: $(tr '\n' ' ' <<<"$lanes"))" >&2
+  exit 64
+fi
+
+branch="integration-$lane"
+wt="$root/.worktrees/$branch"
+
+if [[ "${LAND_LOCKED:-}" != 1 ]]; then
+  LAND_LOCKED=1 exec "$root/tools/agent-lock" resource-heavy -- "$0" "$@"
+fi
+
+if [[ ! -d "$wt" ]]; then
+  if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$root" worktree add "$wt" "$branch"
+  else
+    git -C "$root" worktree add -b "$branch" "$wt" main
+  fi
+  "$root/tools/prepare-worktree" "$wt" --symlink
+fi
+
+if [[ -n "$(git -C "$wt" status --porcelain)" ]]; then
+  echo "land: $wt has uncommitted changes; commit or discard them first." >&2
+  exit 1
+fi
+
+git -C "$wt" merge --no-edit main
+"$root/tools/claim" check "$lane" --branch "$branch" --base main
+(cd "$wt" && tools/test-project full)
+git -C "$wt" diff --check main
+
+ahead="$(git -C "$root" rev-list --count "main..$branch")"
+if [[ "$ahead" == 0 ]]; then
+  echo "land: $branch has nothing that main lacks."
+  exit 0
+fi
+echo "land: $branch verified, $ahead commit(s) ahead of main $(git -C "$root" rev-parse --short main)."
+echo "Next, in the main checkout:"
+echo "  git merge --ff-only $branch"
+echo "  tools/claim note $lane \"landed \$(git rev-parse --short HEAD): <what changed, shared files touched>\""

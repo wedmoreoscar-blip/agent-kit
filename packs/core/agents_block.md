@@ -27,6 +27,9 @@ quirks, high-risk areas) live in `docs/project_profile.md`. `CLAUDE.md` imports 
 - Never read or print `.env` files or other secrets, and never commit them, generated output, or
   local agent state (`.claude/settings.local.json`, `CLAUDE.local.md`, `.worktrees/`).
 - Follow `docs/workflows/change_safety.md` for writes, commits, worktrees, and integration.
+- When `docs/project_profile.md` declares `[lanes]`, several orchestrator sessions share this
+  repository: follow `docs/workflows/parallel_sessions.md`, which wins over the other workflow files.
+- When a reply would ask the user more than one or two questions, use the `questions` skill.
 
 ### Delegation
 

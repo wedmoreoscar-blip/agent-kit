@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Keep parallel orchestrator sessions off each other's files (docs/workflows/parallel_sessions.md).
+
+    tools/claim lanes [--names]               the lanes in docs/project_profile.md and what each writes
+    tools/claim owner PATH ...                which lane owns each path, and who has claimed it
+    tools/claim take LANE PATH ... -m REASON  claim shared paths before editing them
+    tools/claim release LANE [PATH ...]       give claims back (all of LANE's without PATH)
+    tools/claim list                          every current claim
+    tools/claim note LANE TEXT                post a notice for the other sessions
+    tools/claim board [-n N]                  the last N notices (default 20)
+    tools/claim check LANE [--branch B] [--base main]
+                                              files B changed since it left BASE that LANE may not write
+
+Lanes are declared in the profile's TOML block as [lanes.<name>] tables (`writes`, optional `prefix`).
+A `writes` entry is a directory (trailing /), a file, or a glob (fnmatch: `*` also crosses /).
+A lane also owns its own task files: tasks/questions/<lane>.md, tasks/kickoff/<lane>.md,
+tasks/specs/<lane>-*, and history files in tasks/kickoff_history/ with the lane in the name.
+Everything else is shared and must be claimed first.
+
+Claims and notices live in the git directory (<git-common-dir>/agent-lanes/), so the main checkout
+and every worktree see the same ones, and they are never committed. `take` exits 75 when another
+lane owns or has claimed an overlapping path, like tools/agent-lock. Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import fnmatch
+import json
+import subprocess
+import sys
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_profile  # noqa: E402
+
+ROOT = agent_profile.ROOT
+BUSY = 75
+
+
+def state_dir() -> Path:
+    out = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if out.returncode:
+        agent_profile.die("claim: not inside a git repository")
+    path = Path(out.stdout.strip()) / "agent-lanes"
+    path.mkdir(exist_ok=True)
+    return path
+
+
+@contextmanager
+def locked():
+    """Hold the state lock; yields (claims dict, save function)."""
+    base = state_dir()
+    with open(base / ".lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        path = base / "claims.json"
+        claims = json.loads(path.read_text()) if path.is_file() else {}
+
+        def save() -> None:
+            path.write_text(json.dumps(claims, indent=2, sort_keys=True) + "\n")
+
+        yield claims, save
+
+
+def load_lanes() -> dict[str, dict]:
+    try:
+        lanes = agent_profile.lanes()
+    except agent_profile.ProfileError as exc:
+        agent_profile.die(f"claim: {exc}")
+    if not lanes:
+        agent_profile.die("claim: docs/project_profile.md declares no [lanes.<name>] tables; this "
+                          "repository has a single orchestrator, so there is nothing to claim")
+    return lanes
+
+
+def norm(path: str) -> str:
+    """Repository-relative, forward slashes, no leading ./ ; a trailing / is kept (directory)."""
+    p = Path(path)
+    if p.is_absolute():
+        try:
+            p = p.resolve().relative_to(ROOT)
+        except ValueError:
+            agent_profile.die(f"claim: {path} is outside the repository")
+    text = p.as_posix()
+    while text.startswith("./"):
+        text = text[2:]
+    return text + "/" if path.endswith("/") and not text.endswith("/") else text
+
+
+def matches(pattern: str, path: str) -> bool:
+    """A `writes` entry covers a path: glob, directory (trailing /), or exact file or directory."""
+    if any(ch in pattern for ch in "*?["):
+        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/*")
+    base = pattern.rstrip("/")
+    return path == base or path.startswith(base + "/")
+
+
+def lane_files(lane: str) -> list[str]:
+    return [f"tasks/questions/{lane}.md", f"tasks/kickoff/{lane}.md", f"tasks/specs/{lane}-*",
+            f"tasks/kickoff_history/*{lane}*"]
+
+
+def owner(lanes: dict[str, dict], path: str) -> str | None:
+    for name, lane in lanes.items():
+        if any(matches(p, path.rstrip("/")) for p in [*lane["writes"], *lane_files(name)]):
+            return name
+    return None
+
+
+def overlaps(a: str, b: str) -> bool:
+    a, b = a.rstrip("/"), b.rstrip("/")
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def stamp() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def post(lane: str, text: str) -> None:
+    base = state_dir()
+    with open(base / ".lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        with open(base / "board.log", "a", encoding="utf-8") as log:
+            log.write(f"{stamp()} [{lane}] {' '.join(text.split())}\n")
+
+
+def need_lane(lanes: dict[str, dict], lane: str) -> None:
+    if lane not in lanes:
+        agent_profile.die(f"claim: unknown lane {lane!r}; lanes: {', '.join(lanes)}", 64)
+
+
+def cmd_lanes(args) -> int:
+    lanes = load_lanes()
+    if args.names:
+        print("\n".join(lanes))
+        return 0
+    for name, lane in lanes.items():
+        prefix = f" (questions {lane['prefix']})" if lane.get("prefix") else ""
+        print(f"{name}{prefix}: {', '.join(lane['writes'])}")
+    print("shared (claim first): everything else")
+    return 0
+
+
+def cmd_owner(args) -> int:
+    lanes = load_lanes()
+    with locked() as (claims, _):
+        for raw in args.paths:
+            path = norm(raw)
+            held = [f"claimed by {c['lane']} ({c['reason']})" for p, c in claims.items() if overlaps(p, path)]
+            print(f"{path}: {owner(lanes, path) or 'shared'}" + (f"; {'; '.join(held)}" if held else ""))
+    return 0
+
+
+def cmd_take(args) -> int:
+    lanes = load_lanes()
+    need_lane(lanes, args.lane)
+    paths = [norm(p) for p in args.paths]
+    with locked() as (claims, save):
+        refused = []
+        for path in paths:
+            own = owner(lanes, path)
+            if own and own != args.lane:
+                refused.append(f"{path} belongs to lane {own}; ask that session to make the change")
+            for held, claim in claims.items():
+                if claim["lane"] != args.lane and overlaps(held, path):
+                    refused.append(f"{path} overlaps {held}, claimed by {claim['lane']} since "
+                                   f"{claim['since']} ({claim['reason']})")
+        if refused:
+            print("claim refused:\n  " + "\n  ".join(refused), file=sys.stderr)
+            return BUSY
+        taken = []
+        for path in paths:
+            if owner(lanes, path) == args.lane:
+                print(f"{path}: already in lane {args.lane}, no claim needed")
+                continue
+            claims[path] = {"lane": args.lane, "reason": args.message, "since": stamp()}
+            taken.append(path)
+            print(f"claimed {path} for {args.lane}")
+        save()
+    if taken:
+        post(args.lane, f"claimed {', '.join(taken)}: {args.message}")
+    return 0
+
+
+def cmd_release(args) -> int:
+    lanes = load_lanes()
+    need_lane(lanes, args.lane)
+    wanted = {norm(p) for p in args.paths}
+    with locked() as (claims, save):
+        gone = [p for p, c in claims.items() if c["lane"] == args.lane and (not wanted or p in wanted)]
+        missing = wanted - set(gone)
+        for path in gone:
+            del claims[path]
+        save()
+    for path in sorted(missing):
+        print(f"{path}: not claimed by {args.lane}", file=sys.stderr)
+    if gone:
+        print("released " + ", ".join(sorted(gone)))
+        post(args.lane, f"released {', '.join(sorted(gone))}")
+    else:
+        print("nothing to release")
+    return 1 if missing else 0
+
+
+def cmd_list(args) -> int:
+    with locked() as (claims, _):
+        if not claims:
+            print("no claims")
+        for path, c in sorted(claims.items(), key=lambda kv: (kv[1]["lane"], kv[0])):
+            print(f"{c['lane']:12} {path}  since {c['since']}: {c['reason']}")
+    return 0
+
+
+def cmd_note(args) -> int:
+    need_lane(load_lanes(), args.lane)
+    post(args.lane, " ".join(args.text))
+    return 0
+
+
+def cmd_board(args) -> int:
+    log = state_dir() / "board.log"
+    lines = log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
+    print("\n".join(lines[-args.n:]) if lines else "the board is empty")
+    return 0
+
+
+def cmd_check(args) -> int:
+    lanes = load_lanes()
+    need_lane(lanes, args.lane)
+    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", f"{args.base}...{args.branch}"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if out.returncode:
+        agent_profile.die(f"claim: git diff {args.base}...{args.branch} failed: {out.stderr.strip()}")
+    with locked() as (claims, _):
+        mine = [p for p, c in claims.items() if c["lane"] == args.lane]
+    outside = []
+    for path in filter(None, out.stdout.splitlines()):
+        own = owner(lanes, path)
+        if own == args.lane or any(overlaps(p, path) for p in mine):
+            continue
+        outside.append(f"{path} ({'lane ' + own if own else 'shared, not claimed by ' + args.lane})")
+    if outside:
+        print(f"claim check: {args.branch} changes files lane {args.lane} may not write:\n  "
+              + "\n  ".join(outside)
+              + "\nClaim shared files with `tools/claim take`, or hand another lane's files to it.",
+              file=sys.stderr)
+        return 1
+    print(f"claim check: every file {args.branch} changes is {args.lane}'s or claimed by it")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="tools/claim", description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=__doc__.split("\n\n", 1)[1])
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("lanes"); p.add_argument("--names", action="store_true", help="names only")
+    p = sub.add_parser("owner"); p.add_argument("paths", nargs="+")
+    p = sub.add_parser("take"); p.add_argument("lane"); p.add_argument("paths", nargs="+")
+    p.add_argument("-m", "--message", required=True, help="why, in a few words")
+    p = sub.add_parser("release"); p.add_argument("lane"); p.add_argument("paths", nargs="*")
+    sub.add_parser("list")
+    p = sub.add_parser("note"); p.add_argument("lane"); p.add_argument("text", nargs="+")
+    p = sub.add_parser("board"); p.add_argument("-n", type=int, default=20)
+    p = sub.add_parser("check"); p.add_argument("lane")
+    p.add_argument("--branch", default="HEAD"); p.add_argument("--base", default="main")
+    args = parser.parse_args(argv)
+    handlers = {"lanes": cmd_lanes, "owner": cmd_owner, "take": cmd_take, "release": cmd_release,
+                "list": cmd_list, "note": cmd_note, "board": cmd_board, "check": cmd_check}
+    return handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

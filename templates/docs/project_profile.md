@@ -1,7 +1,7 @@
 # Project profile — {{PROJECT}}
 
 Project facts the shared workflows refer to. The TOML block is read by `tools/test-project`,
-`tools/prepare-worktree`, `tools/spec-block` and `tools/writespec-guard`; keep it valid
+`tools/prepare-worktree`, `tools/spec-block`, `tools/writespec-guard`, `tools/claim` and `tools/land`; keep it valid
 (`tools/check-agent-setup` parses it). Everything that needs judgment goes in the prose sections.
 This file belongs to this project; the agent kit never overwrites it.
 
@@ -30,6 +30,12 @@ blocked = []         # verification an implementer cannot do, e.g. "browser chec
 [worktree]
 copy_files       = []   # gitignored files a worktree needs, e.g. ".env"
 dependency_files = []   # a merge changing these needs install_incr, e.g. "package-lock.json"
+
+# Only when several orchestrator sessions work here at once (docs/workflows/parallel_sessions.md):
+# one table per lane. Everything no lane writes is shared and claimed with tools/claim.
+# [lanes.api]
+# writes = ["api/", "tests/api/"]   # directories (trailing /), files or globs
+# prefix = "A"                      # question ID prefix in tasks/questions/api.md
 ```
 
 ## Stack

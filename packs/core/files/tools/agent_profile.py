@@ -2,8 +2,8 @@
 
 The profile is project-owned markdown whose first fenced ```toml block holds the commands and file
 lists that scripts act on. Everything that needs judgment lives in the prose around it. Kit tools
-(test-project, prepare-worktree, spec-block, writespec-guard) read the block through this module so
-none of them hard-codes a project's tooling.
+(test-project, prepare-worktree, spec-block, writespec-guard, claim, land) read the block through this
+module so none of them hard-codes a project's tooling.
 """
 from __future__ import annotations
 
@@ -74,7 +74,48 @@ def validate(data: dict) -> list[str]:
     for key in ("install_fresh", "install_incr"):
         if key in data.get("worktree", {}) and data["worktree"][key] not in known:
             problems.append(f"[worktree].{key} names unknown command {data['worktree'][key]!r}")
+    problems += _validate_lanes(data.get("lanes"))
     return problems
+
+
+_LANE_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+_PREFIX = re.compile(r"^[A-Z]{1,3}$")
+
+
+def _validate_lanes(lanes) -> list[str]:
+    """[lanes.<name>] tables: writes = [paths], optional prefix = question ID letters."""
+    if lanes is None:
+        return []
+    if not isinstance(lanes, dict):
+        return ["[lanes] must hold one [lanes.<name>] table per lane"]
+    problems, prefixes = [], {}
+    for name, lane in lanes.items():
+        where = f"[lanes.{name}]"
+        if not _LANE_NAME.match(name):
+            problems.append(f"{where}: lane names are lowercase kebab-case")
+        if not isinstance(lane, dict):
+            problems.append(f"{where} must be a table")
+            continue
+        writes = lane.get("writes")
+        if not isinstance(writes, list) or not writes or not all(isinstance(w, str) and w for w in writes):
+            problems.append(f"{where}.writes must be a non-empty list of paths")
+        prefix = lane.get("prefix")
+        if prefix is not None:
+            if not isinstance(prefix, str) or not _PREFIX.match(prefix):
+                problems.append(f"{where}.prefix must be one to three capital letters")
+            elif prefix in prefixes:
+                problems.append(f"{where}.prefix {prefix!r} is already used by lane {prefixes[prefix]!r}")
+            else:
+                prefixes[prefix] = name
+        unknown = set(lane) - {"writes", "prefix"}
+        if unknown:
+            problems.append(f"{where} has unknown keys {sorted(unknown)}")
+    return problems
+
+
+def lanes(root: Path = ROOT) -> dict[str, dict]:
+    """The declared lanes (empty when the repository has a single orchestrator)."""
+    return load(root).get("lanes", {}) or {}
 
 
 def blocks_dir(root: Path = ROOT) -> Path:

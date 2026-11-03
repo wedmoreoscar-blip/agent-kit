@@ -20,6 +20,8 @@ Run these from inside a project repository (except `kit packs`). Direction is al
 | `kit packs` | List available packs and what they need. |
 | `kit doctor` | Check this machine and repository: kit on PATH, kit clean, receipt valid, skill copies identical, Codex trust, no personal skills in home folders, Traycer guide current. |
 | `kit doctor --fix` | Apply the safe fixes it finds, asking before each. |
+| `kit dismiss PATH …` | Stop `status`, `sync`, `push` and `doctor` reporting the kit files at PATH in this repository (a file, a folder, or a skill folder, which covers every tool copy of it). The repository's own file there is left alone. Kept in `.agent-kit.lock`, so it is committed. Without PATH, lists what is dismissed. |
+| `kit undismiss PATH …` | Report and sync them again; the next `sync` treats them as new or differing. |
 
 After `kit push`, run `git -C ~/agent-kit push` so other machines get the change (once the kit has a
 remote).

@@ -13,6 +13,7 @@ Skills shared by every kit repository (the `core` pack). Packs installed later a
 | `healthcheck` | One check of this session's background jobs | nothing |
 | `kickoff` | Resume the recorded continuation | `tasks/next_session_kickoff.md` |
 | `make-bench` | Design and scaffold a new benchmark | `docs/workflows/benchmarking.md` |
+| `questions` | Collect questions for the user in one answerable file, then act on the answers | `tasks/questions/` |
 | `skill-writing` | Create or revise a portable skill | `docs/workflows/skill_authoring.md` |
 | `speccheck` | Accept a delegated diff against its spec | `docs/workflows/delegation.md`, `tools/test-project` |
 | `teacher` | Teach a component interactively | nothing |

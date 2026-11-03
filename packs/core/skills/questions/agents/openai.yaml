@@ -1,0 +1,4 @@
+interface:
+  display_name: "Questions File"
+  short_description: "Collect questions for the user in one answerable file"
+  default_prompt: "Use $questions to add these questions to the questions file, or to pull my answers."

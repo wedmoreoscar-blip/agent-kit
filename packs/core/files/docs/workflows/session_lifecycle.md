@@ -1,5 +1,13 @@
 # Session Lifecycle
 
+## Parallel sessions
+
+When `docs/project_profile.md` declares lanes, several orchestrator sessions share the repository
+and everything below applies per lane: the continuation is `tasks/kickoff/<lane>.md`,
+`tasks/next_session_kickoff.md` is an index with one line per lane, and a session writes only its
+own lane's kickoff and index line. `docs/workflows/parallel_sessions.md` ("Handoffs") has the
+layout.
+
 ## Kickoff
 
 Kickoff is read-only:

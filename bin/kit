@@ -17,6 +17,8 @@ receipt and repository tells which side changed, so nothing is ever overwritten 
     kit target add|remove TOOL       mirror skills into another AI tool's project folder
     kit packs                        list available packs
     kit doctor [--fix]               check this machine for this repository
+    kit dismiss [PATH ...]           stop sync and status reporting a kit file here (no PATH: list)
+    kit undismiss PATH ...           report it again
 
 See docs/DESIGN.md in the kit for the full design.
 """
@@ -616,13 +618,35 @@ def classify(unit: Unit, rec: dict | None, in_kit: bool) -> str:
     return "conflict"
 
 
+def skill_neutral(path: str) -> str:
+    """A skill path with its tool folder replaced, so one dismissal covers every skill copy."""
+    for folder in TARGET_DIRS.values():
+        if path == folder or path.startswith(folder + "/"):
+            return "<skills>" + path[len(folder):]
+    return path
+
+
+def is_dismissed(receipt: dict, uid: str) -> bool:
+    key = skill_neutral(uid)
+    for entry in receipt.get("dismissed", []):
+        entry = skill_neutral(entry.rstrip("/"))
+        if key == entry or key.startswith(entry + "/"):
+            return True
+    return False
+
+
 class Session:
     def __init__(self, root: Path, receipt: dict):
         self.root, self.receipt = root, receipt
-        self.units = build_units(root, receipt["packs"], receipt["targets"])
+        units = build_units(root, receipt["packs"], receipt["targets"])
+        known = {u.uid for u in units}
+        orphans = [unit_from_record(root, uid, rec) for uid, rec in receipt["units"].items()
+                   if uid not in known]
+        # Dismissed entries (`kit dismiss`) are invisible to status, sync, push and doctor here.
+        self.dismissed = [u for u in units + orphans if is_dismissed(receipt, u.uid)]
+        self.units = [u for u in units if not is_dismissed(receipt, u.uid)]
         self.by_uid = {u.uid: u for u in self.units}
-        self.orphans = [unit_from_record(root, uid, rec) for uid, rec in receipt["units"].items()
-                        if uid not in self.by_uid]
+        self.orphans = [u for u in orphans if not is_dismissed(receipt, u.uid)]
 
     def entries(self):
         for unit in self.units:
@@ -701,12 +725,20 @@ def cmd_status(args) -> int:
               "to send local edits to the kit.")
     else:
         print(c("\nEverything the kit installed is up to date.", "32"))
+    report_dismissed(receipt)
     report_mirror_drift(session)
     for dest, text, _ in home_installs(receipt["packs"]):
         if read_text(dest) != text:
             print(describe(Unit(root, "home", str(dest), None), "update").replace(
                 "kit updated", "machine file differs") + " (kit sync installs it)")
     return 0
+
+
+def report_dismissed(receipt: dict) -> None:
+    entries = receipt.get("dismissed", [])
+    if entries:
+        print(f"\nDismissed here, not reported or synced ({len(entries)}; `kit undismiss PATH` to undo): "
+              + ", ".join(entries))
 
 
 def report_mirror_drift(session: Session) -> bool:
@@ -995,6 +1027,8 @@ def cmd_push(args) -> int:
     for raw in args.paths:
         rel = os.path.relpath(Path(raw).resolve(), root)
         matches = [u for u in session.units if u.path == rel or u.path.startswith(rel.rstrip("/") + "/")]
+        if not matches and is_dismissed(receipt, rel):
+            die(f"{rel} is dismissed here; `kit undismiss {rel}` first")
         if not matches:
             die(f"{rel} is not tracked by the kit. To add it to the kit use "
                 f"`kit push --new {rel} --pack <pack>`")
@@ -1114,7 +1148,7 @@ def cmd_remove(args) -> int:
             die(f"{other} requires {args.pack}; remove {other} first")
     prompter = Prompter(args.yes)
     for uid, rec in list(receipt["units"].items()):
-        if rec["pack"] != args.pack:
+        if rec["pack"] != args.pack or is_dismissed(receipt, uid):
             continue
         unit = unit_from_record(root, uid, rec)
         if digest(unit.repo_text()) != rec["hash"] and unit.repo_text() is not None:
@@ -1167,6 +1201,63 @@ def cmd_target(args) -> int:
         if leftover.exists():
             print(f"Project-only skills remain in {TARGET_DIRS[tool]}/; delete them by hand if unwanted.")
         print(c(f"Removed target {tool}.", "1"))
+    return 0
+
+
+def repo_rel(root: Path, raw: str) -> str:
+    """A PATH argument as a repository-relative path; a region uid (`AGENTS.md#core`) passes as is."""
+    if "#" in raw:
+        return raw
+    return os.path.relpath(Path(raw).resolve(), root).rstrip("/")
+
+
+def cmd_dismiss(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here; run `kit init` or `kit adopt`")
+    current: list[str] = receipt.setdefault("dismissed", [])
+    if not args.paths:
+        if current:
+            print("Dismissed here (status and sync skip them):")
+            for entry in current:
+                print(f"  {entry}")
+        else:
+            print("Nothing is dismissed here.")
+        return 0
+    session = Session(root, receipt)
+    every = session.units + session.orphans + session.dismissed
+    for raw in args.paths:
+        rel = repo_rel(root, raw)
+        if rel in current or is_dismissed(receipt, rel):
+            print(f"already dismissed: {rel}")
+            continue
+        key = skill_neutral(rel)
+        hits = [u for u in every if skill_neutral(u.uid) == key or skill_neutral(u.uid).startswith(key + "/")]
+        if not hits:
+            die(f"the kit installs nothing at {rel} in this repository's packs")
+        current.append(rel)
+        print(f"dismissed: {rel} ({len(hits)} kit entr{'y' if len(hits) == 1 else 'ies'}). "
+              "kit status and kit sync now skip it; the file here is left as it is.")
+    receipt["dismissed"] = sorted(set(current))
+    save_receipt(root, receipt)
+    return 0
+
+
+def cmd_undismiss(args) -> int:
+    root = repo_root()
+    receipt = load_receipt(root) or die("no .agent-kit.lock here")
+    current: list[str] = receipt.get("dismissed", [])
+    for raw in args.paths:
+        rel = repo_rel(root, raw)
+        stored = next((e for e in current if skill_neutral(e) == skill_neutral(rel)), None)
+        if stored is None:
+            die(f"{rel} is not dismissed here (kit dismiss lists what is)")
+        current.remove(stored)
+        print(f"undismissed: {rel}. The next kit status or sync reports it again.")
+    if current:
+        receipt["dismissed"] = current
+    else:
+        receipt.pop("dismissed", None)
+    save_receipt(root, receipt)
     return 0
 
 
@@ -1223,6 +1314,8 @@ def cmd_doctor(args) -> int:
             states[state] = states.get(state, 0) + 1
         missing = sum(1 for u, s, _ in session.classified() if s in ("new",))
         ok(f"receipt: packs {', '.join(receipt['packs'])}; {len(receipt['units'])} tracked entries")
+        if receipt.get("dismissed"):
+            note(f"dismissed here: {', '.join(receipt['dismissed'])} (kit undismiss PATH)")
         pending = {k: v for k, v in states.items() if k not in ("ok",)}
         if pending:
             note("differences: " + ", ".join(f"{v} {STATE_TEXT[k]}" for k, v in pending.items())
@@ -1323,10 +1416,15 @@ def main() -> int:
     p = sub.add_parser("target"); p.add_argument("action", choices=["add", "remove"]); p.add_argument("tool")
     sub.add_parser("packs")
     p = sub.add_parser("doctor"); p.add_argument("--fix", action="store_true")
+    p = sub.add_parser("dismiss", help="stop reporting and syncing kit files at these paths here")
+    p.add_argument("paths", nargs="*")
+    p = sub.add_parser("undismiss", help="report and sync them again")
+    p.add_argument("paths", nargs="+")
     args = parser.parse_args()
     handlers = {"init": cmd_init, "adopt": cmd_adopt, "status": cmd_status, "sync": cmd_sync,
                 "push": cmd_push, "add": cmd_add, "remove": cmd_remove, "target": cmd_target,
-                "packs": cmd_packs, "doctor": cmd_doctor}
+                "packs": cmd_packs, "doctor": cmd_doctor, "dismiss": cmd_dismiss,
+                "undismiss": cmd_undismiss}
     return handlers[args.command](args)
 
 

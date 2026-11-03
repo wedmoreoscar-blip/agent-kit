@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-03 — questions, parallel sessions, dismissals
+
+Generalised from job-automation (which keeps its own versions):
+
+- Core skill `questions`: one answerable questions file per topic or lane, with an optional review
+  copy in whatever surface the client offers; `scripts/questions.py` (`status`, `pull`, `push
+  --meta`).
+- Core workflow `docs/workflows/parallel_sessions.md` and tools `tools/claim` (lane ownership,
+  claims, notice board, scope check) and `tools/land` (per-lane integration branch), driven by
+  `[lanes.<name>]` tables in the profile. `agent_profile.py` validates them. `session_lifecycle.md`
+  points to the per-lane kickoff layout; the core AGENTS block names both.
+- `kit dismiss` / `kit undismiss`: stop reporting and syncing chosen kit files in one repository.
+
 ## 2026-10-03 — first version
 
 Extracted from DrinkSmart's agent setup (as of `22faad3`) and made project- and harness-neutral:

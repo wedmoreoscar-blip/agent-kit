@@ -391,6 +391,17 @@ When moving a DrinkSmart file into the kit:
   missing starter files, then asks per differing file: take kit / keep repo / push repo version to
   the kit. It also flags pre-existing hook entries that duplicate the kit's.
 - **Skill copies include `agents/openai.yaml` in every target**, so all copies are byte-identical.
+- **Dismissals (2026-11-03).** `kit dismiss PATH` adds PATH to the receipt's `dismissed` list. A
+  kit entry at or under a dismissed path (skill folders match across every tool target; a region by
+  its uid, e.g. `AGENTS.md#core`) is left out of `status`, `sync`, `push`, `remove` and `doctor`;
+  its receipt record, if any, is kept. This is how a project keeps its own, deliberately different
+  file where the kit has one of the same name (job-automation keeps its own `questions` skill and
+  lane tools) without `sync` offering the kit's version every time. `kit undismiss` reverses it.
+- **Parallel sessions (2026-11-03).** Core carries `docs/workflows/parallel_sessions.md`,
+  `tools/claim` and `tools/land`, active only when the profile declares `[lanes.<name>]` tables.
+  Sessions coordinate through files and git only: claims and a notice board in
+  `<git-common-dir>/agent-lanes/`, and a scope check in `land`. The `kickoff` and `handoff` skills
+  are unchanged; `session_lifecycle.md`, which both follow, points to the per-lane layout.
 - Verified on 2026-10-03: core-only `kit init` passes `check-agent-setup` with Traycer hidden from
   `PATH` (including `codex execpolicy` loading the generated rules); status/sync/push/push --new,
   conflicts, `--discard`, kit-side removal, `add`/`remove` of packs, tool targets, `prepare-worktree`
