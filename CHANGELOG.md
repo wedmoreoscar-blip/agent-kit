@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-04 — DeepSeek launcher: no auto-mode notice
+
+- `traycer` pack, `home/bin/deepseek`: sets `CLAUDE_CODE_AUTO_MODE_SERVER=0`. Auto mode's
+  server-side classifier checks cannot pass through `api.deepseek.com`, so every new DeepSeek
+  session stopped at an "isn't eligible" notice until someone pressed Enter, stalling unattended
+  agents. Billing is unchanged.
+
 ## 2026-11-03 — questions, parallel sessions, dismissals
 
 Generalised from job-automation (which keeps its own versions):

@@ -26,5 +26,10 @@ export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-flash"
 export CLAUDE_CODE_EFFORT_LEVEL="max"
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=800000
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# Auto mode's server-side classifier checks cannot pass through DeepSeek's API. Without this, every
+# new session stops at an "auto mode ... isn't eligible" notice until someone presses Enter, which
+# stalls unattended agents. With it, Claude Code runs its own classifier requests (billed as before)
+# and shows no notice. https://code.claude.com/docs/en/auto-mode-classifier-billing
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
 
 exec "$HOME/.local/bin/claude" "$@"
