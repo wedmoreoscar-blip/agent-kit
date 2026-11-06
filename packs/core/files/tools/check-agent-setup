@@ -69,6 +69,21 @@ def parse_skill(path: Path, expected: str, failures: list[str]) -> None:
         fail(f"{path.relative_to(ROOT)} name does not match its directory", failures)
     if not fields.get("description"):
         fail(f"{path.relative_to(ROOT)} has an empty description", failures)
+    # Format limits from Anthropic's and OpenAI's skill guides (docs/workflows/skill_authoring.md).
+    name, description = fields.get("name", ""), fields.get("description", "")
+    if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name) or len(name) > 64:
+        fail(f"{path.relative_to(ROOT)} name must be lowercase letters, digits and single hyphens, "
+             "at most 64 characters", failures)
+    if "anthropic" in name or "claude" in name:
+        fail(f"{path.relative_to(ROOT)} name contains a reserved word (anthropic, claude)", failures)
+    if len(description) > 1024:
+        fail(f"{path.relative_to(ROOT)} description is {len(description)} characters (limit 1024)",
+             failures)
+    if "<" in description or ">" in description:
+        fail(f"{path.relative_to(ROOT)} description contains < or >", failures)
+    body = text[match.end():]
+    if re.search(r"^[ \t]*\[TODO[:\]]", body, re.MULTILINE):
+        fail(f"{path.relative_to(ROOT)} contains an unfinished [TODO] placeholder", failures)
 
 
 def tree_bytes(directory: Path) -> dict[str, bytes]:
