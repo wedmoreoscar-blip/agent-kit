@@ -1,6 +1,6 @@
 ---
 name: questions
-description: Collect every question the user must answer into one questions file (tasks/questions/<topic>.md, one per lane when several sessions run in parallel) with answer space, optionally mirrored to a review copy the user answers in; then pull the answers back and act on them. Use whenever a reply would ask the user more than one or two questions (planning, design choices, open agenda items), when the user says they have answered the questions, or asks to add, list or find questions.
+description: Collect every question the user must answer into one questions file (tasks/questions/TOPIC.md, one per lane when several sessions run in parallel) with answer space, optionally mirrored to a review copy the user answers in; then pull the answers back and act on them. Use whenever a reply would ask the user more than one or two questions (planning, design choices, open agenda items), when the user says they have answered the questions, or asks to add, list or find questions.
 ---
 
 # Questions file

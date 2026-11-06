@@ -31,14 +31,44 @@ description: State what the workflow does and the concrete requests that should 
 2. Keep one recognizable job per skill. Put detailed policy or examples in one-level-deep references.
 3. Prefer imperative, concise instructions. Add a script only when deterministic repetition warrants
    it, and execute-test every added script.
-4. For Codex, initialize new packages with its installed `skill-creator` helper when available and
-   validate with `quick_validate.py`. Generate `agents/openai.yaml` from the finished skill.
+4. Write the files by hand, following "Writing rules" below. Add `agents/openai.yaml` with an
+   `interface` block (`display_name`, `short_description`, `default_prompt`) in the style of the
+   existing skills. Do not use a client's skill-creator scripts: they default to a home directory
+   and allow frontmatter keys this repository forbids.
 5. Mirror the whole skill folder byte-identically in `.agents/skills/<name>/` and
    `.claude/skills/<name>/`, plus every extra tool target recorded in `.agent-kit.lock`. Do not use
    symlinks because the repository must clone cleanly on Windows.
 6. Test obvious triggers, paraphrases, non-triggers, incomplete inputs, and at least one edge case in a
    fresh session. Restart a client only if its live watcher does not discover a newly created folder.
-7. Run `tools/check-agent-setup` to validate structure and cross-client parity.
+7. Run `tools/check-agent-setup` to validate structure, frontmatter format and cross-client parity.
+
+## Writing rules
+
+Combined from Anthropic's [skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+and OpenAI's [Codex skills guide](https://learn.chatgpt.com/docs/build-skills), checked 2026-11-06.
+Re-read both before a large rework; they change.
+
+- **Frontmatter:** `name` and `description` only. `name`: lowercase letters, digits and single
+  hyphens, at most 64 characters, matching the folder, and never containing `anthropic` or `claude`.
+  `description`: at most 1,024 characters, no `<` or `>`. `tools/check-agent-setup` enforces these.
+- **Description:** it alone decides whether the skill is picked, from among every installed skill.
+  Third person; what the skill does, then when to use it. Put the trigger words first, because hosts
+  shorten long descriptions. Add a "not for …" boundary only where a neighbouring request would
+  otherwise misfire. Avoid catch-alls ("how do I do X") that match ordinary questions.
+- **Body:** assume a capable model; include only what changes its decisions (project paths, rules,
+  sequences, traps). Imperative steps with explicit inputs and outputs. Keep it short; 500 lines is a
+  hard ceiling, not a target.
+- **Strictness follows risk:** exact commands and fixed order only where a mistake is costly or the
+  sequence is fragile; elsewhere state the outcome and the criteria.
+- **Detail:** move mode-specific material into files linked directly from `SKILL.md` (one level
+  deep), each with a line saying when to read it. A skill whose procedure lives in a
+  `docs/workflows/` file points there instead, which is the kit's pattern.
+- **Scripts:** only for deterministic, repeated work; handle errors in the script, name every
+  constant's reason, say whether to run or read it, and run-test it.
+- **Commands in the body:** run every command the skill tells an agent to run, on a realistic case
+  (not only the easy one), before finishing. An untested command is the commonest break.
+- **Content:** one term per concept; forward slashes in paths; no dated statements ("before
+  August …"), facts likely to go stale (install counts, prices), README or changelog files.
 
 ## Where skills live
 

@@ -8,7 +8,7 @@ Skills shared by every kit repository (the `core` pack). Packs installed later a
 | `audit-context` | Read everything and reconcile docs, records and code, read-only | `docs/workflows/context_audit.md` |
 | `bench` | Run an existing benchmark with smoke test, grading and findings | `docs/workflows/benchmarking.md`, `tools/agent-lock` |
 | `decision-check` | Answer a question strictly from `LOCKED` decisions | `docs/decisions.md` |
-| `find-skills` | Find an existing skill in the open ecosystem and install it into this project | `npx skills` |
+| `find-skills` | Find a skill or plugin (official marketplaces, skills.sh, GitHub), review every file and install it into this project | `gh`, `claude`; `npx` for skills.sh |
 | `handoff` | Close a session: decisions, git triage, kickoff bundle | `docs/workflows/session_lifecycle.md`, `tasks/` |
 | `healthcheck` | One check of this session's background jobs | nothing |
 | `kickoff` | Resume the recorded continuation | `tasks/next_session_kickoff.md` |
