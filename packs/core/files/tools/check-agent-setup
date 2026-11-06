@@ -131,6 +131,13 @@ def check_writespec_guard(failures: list[str]) -> None:
         (agent("Spec: change foo.\n" + blocks), False),
         (agent("Spec: change foo. Then add new unit tests for it.\n" + blocks), True),
         ({"tool_name": "Bash", "tool_input": {"command": "ls"}}, False),
+        # Codex spawn_agent and opencode task: a commission when the task names a worktree.
+        ({"tool_name": "spawn_agent", "tool_input": {"task_name": "a", "message": "Explore and report"}}, False),
+        ({"tool_name": "spawn_agent", "tool_input": {"task_name": "a", "message": "Work in worktree x"}}, True),
+        ({"tool_name": "Agent", "tool_input": {"task_name": "a", "message": "Work in worktree x\n" + blocks}},
+         False),
+        ({"tool_name": "task", "tool_input": {"description": "d", "prompt": "Work in worktree x"}}, True),
+        ({"tool_name": "task", "tool_input": {"description": "d", "prompt": "Find the config"}}, False),
     ]
     if checker_only:
         cases.append((agent(f"Spec.\nRun these from the root:\n- `{checker_only[0]}`\n" + blocks), True))

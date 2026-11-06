@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-06 — Guards in Codex and opencode
+
+- Core `hooks.toml`: entries take an optional `codex_matcher`; `kit sync` writes those into a
+  generated `.codex/hooks.json` (command finds the root with `git rev-parse --show-toplevel`).
+  Codex runs project hooks only after the user trusts them in `/hooks`; `kit doctor` reports it.
+- Core file `.opencode/plugins/kit-guards.js`: runs `writespec-guard` (bash, task) and `spend-guard`
+  (bash) before opencode's tools and throws on a deny, which blocks the call.
+- `writespec-guard`: a Codex `spawn_agent` or opencode `task` whose text names a worktree is a
+  commission (neither harness creates worktrees, so delegation.md has the spec name one). Claude
+  Code behaviour is unchanged.
+- `check-agent-setup`: Codex and opencode regression cases. `tests/` (new): `python3 -m unittest
+  discover -s tests`.
+
 ## 2026-11-04 — DeepSeek launcher: no auto-mode notice
 
 - `traycer` pack, `home/bin/deepseek`: sets `CLAUDE_CODE_AUTO_MODE_SERVER=0`. Auto mode's

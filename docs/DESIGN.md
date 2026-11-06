@@ -62,7 +62,7 @@ agent-kit/
                                 test-project (reads the profile), prepare-worktree (new, reads the profile)
       agents_block.md           the generic AGENTS.md rules block
       permissions.toml          generic permission entries
-      hooks.toml                Claude PreToolUse wiring for writespec-guard and spend-guard
+      hooks.toml                PreToolUse wiring for writespec-guard and spend-guard (Claude; Codex via codex_matcher)
     traycer/                    optional; nothing in core refers to it
       workflows/delegation_traycer.md   spawning/messaging agents, Traycer worktrees, --expect-reply
       agents_block.md           extra AGENTS.md rules, active only when running under Traycer
@@ -284,7 +284,7 @@ DrinkSmart's setup assumes Traycer in a few places: `AGENTS.md` ("delegate throu
 | Delegation | `delegation.md` describes the harness-neutral loop: `writespec` → implementer in an isolated worktree → `speccheck` → integration branch → fast-forward. Default mechanism is the orchestrator client's **native subagents**. | `delegation_traycer.md`: spawning Traycer agents, Traycer-managed worktrees, `--expect-reply`, keeping agents warm. |
 | Worktree isolation | Claude Code's subagents support worktree isolation directly. For clients whose subagents don't, the orchestrator runs `tools/prepare-worktree` and tells the subagent to work only there. | Traycer creates the worktrees. |
 | Implementer choice | `agent_selection.md` names roles and models without naming a harness. | Installs the guide to `~/.traycer` and maps roles onto Traycer harnesses. |
-| Spec enforcement | `writespec-guard` checks every subagent launch (Claude `Agent` tool) for the `writespec` scope and closing blocks. Enforced only in Claude Code; Codex and opencode follow the rule in the `AGENTS.md` block. | Adds the `traycer agent send` matcher. |
+| Spec enforcement | `writespec-guard` checks every implementer commission for the `writespec` scope and closing blocks, in all three harnesses (2026-11-06): Claude Code through `.claude/settings.json` hooks, Codex through the generated `.codex/hooks.json` (run only after the user trusts it in `/hooks`; `kit doctor` checks), opencode through the `.opencode/plugins/kit-guards.js` plugin. `spend-guard` runs the same way. | Adds the `traycer agent send` matcher. |
 | `AGENTS.md` rules | No mention of any harness. | An extra block of Traycer rules, prefixed "When running under Traycer". |
 | Relay | — | `relay` pack, which requires `traycer`. |
 
@@ -356,7 +356,7 @@ When moving a DrinkSmart file into the kit:
 ## Open questions
 
 - Does Codex's `forbidden` rule also block commands that would run inside the sandbox? To be confirmed with a live test during the build.
-- How Codex's and opencode's native subagents handle worktree isolation, and whether either can enforce the writespec rule with a hook as Claude can. To check during the build.
+- ~~How Codex's and opencode's native subagents handle worktree isolation, and whether either can enforce the writespec rule with a hook as Claude can.~~ Settled 2026-11-06: neither creates a worktree, so delegation.md's "create one and name it in the spec" applies, and a `spawn_agent` (Codex) or `task` (opencode) call whose text names a worktree is a commission. Both harnesses can block with a hook (`docs/plans/2026-11-06-guards-codex-opencode.md`).
 
 ## As built (2026-10-03)
 
@@ -378,7 +378,8 @@ When moving a DrinkSmart file into the kit:
 - **Spec blocks.** `scope.md` and `closing.md` stay fixed text; `baseline.md` became
   `baseline.md.tmpl`, rendered by `tools/spec-block baseline` from `[implementer]`. The guard renders
   the same text to compare.
-- **writespec-guard** governs Claude Code `Agent`/`Task` calls with `isolation: "worktree"` in core.
+- **writespec-guard** governs Claude Code `Agent`/`Task` calls with `isolation: "worktree"` in core,
+  and (2026-11-06) Codex `spawn_agent` and opencode `task` calls whose text names a worktree.
   Other harnesses plug in as `tools/writespec_guard_*.py` modules (`extract(payload)`); the traycer
   pack ships one for `traycer agent send`. A dispatch may name its spec file under `tasks/specs/`
   instead of inlining it.

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """PreToolUse guard: no delegation is commissioned without a writespec spec.
 
-Reads a Claude Code PreToolUse hook payload on stdin. A *commission* is any dispatch of work to an
-implementer. Core recognises one kind: a Claude Code subagent launched with worktree isolation
-(`Agent`/`Task` tool, `isolation: "worktree"`), which is how docs/workflows/delegation.md runs a
-native-subagent implementer. Research or exploration subagents without worktree isolation are not
-commissions. Harness packs add more kinds as plugins: any `tools/writespec_guard_*.py` module with an
+Reads a PreToolUse hook payload on stdin: Claude Code's and Codex's (the same shape), or the one
+the opencode plugin `.opencode/plugins/kit-guards.js` builds. A *commission* is any dispatch of work
+to an implementer. Core recognises native subagents sent to work in their own worktree, which is how
+docs/workflows/delegation.md runs a native-subagent implementer: in Claude Code the `Agent`/`Task`
+tool with `isolation: "worktree"`; in Codex (`spawn_agent`) and opencode (`task`), which have no
+worktree option, a subagent whose task names a worktree (delegation.md has the orchestrator create
+one and name it in the spec). Research or exploration subagents are not commissions. Harness packs add more kinds as plugins: any `tools/writespec_guard_*.py` module with an
 `extract(payload) -> str | None` function returning the commission text, or None when the payload
 commissions nothing (for example the `traycer` pack's `traycer agent send`).
 
@@ -77,14 +79,36 @@ def norm(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Codex's spawn_agent arguments (codex-cli 0.160): task_name, message or items, fork_turns, model.
+CODEX_SPAWN_KEYS = {"task_name", "message", "items", "fork_turns"}
+WORKTREE_RE = re.compile(r"\bworktrees?\b", re.IGNORECASE)
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
 def extract_native(payload):
-    """A Claude Code subagent launched into its own worktree is an implementer commission."""
-    if payload.get("tool_name") not in ("Agent", "Task"):
+    """A native subagent sent to work in its own worktree is an implementer commission."""
+    name = payload.get("tool_name")
+    tool_input = payload.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
         return None
-    tool_input = payload.get("tool_input", {})
-    if tool_input.get("isolation") != "worktree":
-        return None
-    return tool_input.get("prompt", "") or " "
+    if name in ("Agent", "Task") and not CODEX_SPAWN_KEYS & tool_input.keys():  # Claude Code
+        if tool_input.get("isolation") != "worktree":
+            return None
+        return tool_input.get("prompt", "") or " "
+    if name in ("Agent", "spawn_agent", "task"):  # Codex, or opencode through its plugin
+        text = "\n".join(strings(tool_input))
+        return text if WORKTREE_RE.search(text) else None
+    return None
 
 
 def plugins():

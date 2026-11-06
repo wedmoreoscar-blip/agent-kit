@@ -44,7 +44,8 @@ packs/core/        every repository gets this
   files/           docs/workflows/*, docs/agent_setup/*, ORCHESTRATION.md, tools/*
   agents_block.md  the shared rules inserted into each AGENTS.md
   permissions.toml deny rules → Claude, opencode and Codex formats
-  hooks.toml       Claude hooks for writespec-guard and spend-guard
+  hooks.toml       Claude and Codex hooks for writespec-guard and spend-guard
+  files/.opencode/ the opencode plugin that runs the same guards
   gitignore_block  shared .gitignore lines
 packs/traycer/     delegation through Traycer; inert without Traycer
 packs/relay/       Codex TUI orchestration through an A2A hub (needs traycer)

@@ -1,7 +1,17 @@
 # Plan: the kit's guards in Codex and opencode (2026-11-06)
 
-Status: **plan only, waiting for the user's answer** (question Q11 in job-automation's
-`tasks/questions/next-build.md`). Nothing below is built yet.
+Status: **built 2026-11-06** (the user chose Q11 (a) in job-automation's
+`tasks/questions/next-build.md`). Two findings changed the design below:
+
+- **Codex probe not run:** auto mode refused `--dangerously-bypass-hook-trust`. The `spawn_agent`
+  arguments were read from the Codex 0.160.1 binary instead: `task_name`, `message` or `items`,
+  `fork_turns`, `model`; no worktree option.
+- **Subagents in both harnesses are guarded after all.** Neither creates a worktree, so
+  delegation.md's rule applies (the orchestrator creates one and names it in the spec): a
+  `spawn_agent` or `task` call whose text names a worktree is a commission. The design's "`task` is
+  left alone" is superseded.
+- **opencode probe passed:** a throw from `tool.execute.before` blocked a `bash` call (opencode
+  1.18.33, DeepSeek Flash; the command's file was never written).
 
 ## Problem
 
