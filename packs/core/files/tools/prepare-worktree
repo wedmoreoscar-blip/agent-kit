@@ -10,7 +10,11 @@
    - a worktree with no installed marker gets [commands].install_fresh (must not rewrite the lockfile);
    - with --since, a change to any [worktree].dependency_files gets [commands].install_incr;
    - otherwise nothing.
-3. Runs [commands].test and reports the result, so the green count the implementer inherits is known.
+3. Checks the test suite loads, with [commands].test_collect (collect every test, run none). Loading
+   imports every test file, so a missing config file or tool fails here, in seconds, instead of
+   reading later as the implementer's breakage. Without test_collect it runs [commands].test, the
+   whole suite, and says so. The counts a spec quotes come from `tools/test-project recorded`, once
+   per wave, not from here.
 
 See docs/workflows/delegation.md, step 3.
 """
@@ -100,11 +104,19 @@ def main() -> int:
         print("SKIP install: dependency set unchanged")
     marker.write_text("provisioned\n")
 
-    if "test" in commands:
-        code = run(commands["test"], worktree, lock=False)
-        print(("PASS" if code == 0 else "FAIL") + " test: record the count above in the spec")
+    if "test_collect" in commands:
+        code = run(commands["test_collect"], worktree, lock=False)
+        print(("PASS" if code == 0 else "FAIL") + " test_collect: "
+              + ("the test suite loads in this worktree" if code == 0
+                 else "the suite does not load here; fix provisioning before dispatching"))
         return code
-    print("SKIP test: no [commands].test")
+    if "test" in commands:
+        print("NOTE no [commands].test_collect in docs/project_profile.md: running the whole suite "
+              "([commands].test) to check the worktree instead", flush=True)
+        code = run(commands["test"], worktree, lock=False)
+        print(("PASS" if code == 0 else "FAIL") + " test")
+        return code
+    print("SKIP test: neither [commands].test_collect nor [commands].test is defined")
     return 0
 
 

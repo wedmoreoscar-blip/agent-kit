@@ -17,17 +17,20 @@ Four properties, in priority order. Every rule below exists to serve one of them
 1. **Worktrees stay warm.** A provisioned worktree that is clean and level with `main` is a
    standing asset: dependencies installed, and agent context cached where the harness keeps agents
    alive. Never delete one that a next delegation could use, just to prove tidiness.
-2. **One full baseline per delegation.** The full verification profile is slow and token-hungry.
+2. **One full baseline per wave.** The full verification profile is slow and token-hungry.
    It runs once, as a confirmation gate, after repairs, never as a diagnostic before them.
+   Everyone else runs only the tests their change can affect (`tools/test-project related`). The
+   only other full run is on `main` before dispatch, and only when `main` has moved since the last
+   recorded one (step 7).
 3. **One repair loop.** Surface every problem in a single review pass, fix them together, verify
    once.
    **Verification belongs to the checker, not the implementer.** The implementer writes the code
-   and confirms only that it runs and that the existing suite still passes; it does not write
-   tests. The checker derives coverage from the spec on the integration branch. This is not only
-   about avoiding duplicated effort: tests written by the agent that wrote the code encode the
-   same blind spots, so a green suite can report success over a clause that was never
-   implemented. Independence is what makes the single check loop trustworthy enough to be the
-   only one.
+   and confirms only that it runs and that the existing tests its change can affect still pass; it
+   does not write tests. The checker derives coverage from the spec on the integration branch. This
+   is not only about avoiding duplicated effort: tests written by the agent that wrote the code
+   encode the same blind spots, so a green suite can report success over a clause that was never
+   implemented. Independence is what makes the single check loop trustworthy enough to be the only
+   one.
 4. **Fast-forwards only.** `main` advances by fast-forward from a verified integration branch. It
    never receives untested work that then has to be re-tested in place.
 
@@ -110,8 +113,12 @@ commission is sent and answered (8).
      the implementer's doing. The incremental case exists because a merge that moved the
      dependency set leaves installed packages describing a tree that no longer exists, and the
      first verification command can then fail on a tool that is simply missing.
-   - **Runs the test command and prints the count** the implementer inherits. That run is cheap and
-     confirms the worktree is genuinely usable before an agent is pointed at it. Never skip it.
+   - **Checks the test suite loads**, with `[commands].test_collect`: every test collected, none
+     run. Loading imports every test file, so it catches the missing-config and missing-tool
+     failures above before an agent is blamed for them, in seconds rather than a whole-suite run
+     per worktree. Never skip it. Without `test_collect` the tool falls back to running the whole
+     `test` command. It is a readiness check, not where a spec's counts come from: step 7 gets
+     those once for the whole wave.
 
 4. **Configure the agent explicitly** where the harness allows it: model and reasoning effort.
    Do not assume a repository config file reaches a spawned agent.
@@ -129,9 +136,17 @@ role skips to step 6.
    denies a non-compliant dispatch in Claude Code, so this is enforced rather than advisory there;
    in other clients it is a rule in `AGENTS.md`.
 7. **State the verification baseline in concrete numbers.** Write the spec as though the
-   implementer cannot ask. Run the commands and give the literal failure counts, the literal test
-   count, and any repository-specific command trap. A cross-reference to another document is not a
-   baseline. A runtime question route does not weaken this requirement.
+   implementer cannot ask. Give the literal failure counts, the literal test count, and any
+   repository-specific command trap. A cross-reference to another document is not a baseline. A
+   runtime question route does not weaken this requirement.
+
+   **Take the numbers from `tools/test-project recorded`.** It prints the last `full` run for the
+   commit `main` is at, written by the command itself and keyed by commit, so it cannot go stale the
+   way a count copied into a document does. The previous wave's final baseline (step 13) is usually
+   that run, so a wave normally starts with no run at all. When it reports `STALE` or `NO RECORD`
+   (`main` has moved: an inline commit, another lane landing, a fresh clone), run
+   `tools/test-project full` once on a clean `main` and quote that. One run serves every spec in
+   the wave: never one per spec, and never one per worktree.
 
    **Check the numbers survive the change you are commissioning.** A count is a floor only if the
    work is compatible with it. If the spec adds an instance of something an existing test counts,
@@ -143,6 +158,11 @@ role skips to step 6.
    It needs the literal counts to know what "no worse" means; it does not need to produce them all
    itself. The commands under `[implementer].skip` belong to the checker: they are the expensive
    ones, and an implementer re-deriving a known-failing count learns nothing.
+
+   **`[implementer].run` names `test_related`, not the whole suite.** The implementer runs
+   `tools/test-project related` while working and once before handback. Its branch is isolated, so
+   a whole-suite run there answers a question the merged tree asks again at step 13, and the answer
+   is thrown away.
 
    The reason is contention. Several implementers each running every expensive command can slow
    the machine several-fold. **A starved agent is indistinguishable from a stalled one**, and that
@@ -201,12 +221,20 @@ role skips to step 6.
     review, not as evidence: read their bodies, because a test named for a clause can contain
     nothing that exercises it.
 
-    **Run only the tests you just wrote for the leg you just merged, and nothing else.** The
-    pre-existing suite and the rest of the profile are deferred to step 13. The line is not
-    arbitrary: **run the checks whose answers survive the remaining merges, defer the ones whose
-    answers do not.** A fresh clause test answers something only this leg can answer and stays
-    valid however the wave lands; the full suite answers a question about the whole tree, and at
-    leg three of five that answer is provisional and will be re-derived at leg five anyway.
+    **Test behaviour, and treat any check that reads source as text as temporary review
+    evidence.** `speccheck` step 5 says what to write, what to name it, and what to delete before
+    committing. Without that rule every leg adds clause checks that stay forever, and the suite
+    every later run pays for only grows.
+
+    **Run the tests you just wrote, plus the existing tests related to the leg you just merged
+    (`tools/test-project related --base HEAD^1`), and nothing else.** The merge commit's first
+    parent makes that exactly this leg's files and your uncommitted tests. The rest of the suite and
+    the rest of the profile are deferred to step 13. The line is not arbitrary: **run the checks
+    whose answers survive the remaining merges, defer the ones whose answers do not.** A fresh
+    clause test answers something only this leg can answer and stays valid however the wave lands,
+    and so does "did this leg break the tests of the code it touched", because disjoint legs do not
+    touch each other's files. The full suite answers a question about the whole tree, and at leg
+    three of five that answer is provisional and will be re-derived at leg five anyway.
 
     The pull to re-run everything is strongest right after a merge. It is the trap: five legs means
     five full runs, and the one-baseline rule dies by a thousand individually reasonable cuts.
@@ -232,9 +260,15 @@ role skips to step 6.
 
 ### Integrate
 
-13. **Run the full baseline once, after the repairs:** `tools/test-project full` and
-    `git diff --check`. Derive any known-failing ceiling by running it, not by quoting a document,
-    and read the failures rather than only counting them.
+13. **Commit the repairs, then run the full baseline once:** `tools/test-project full` and
+    `git diff --check`. The `full` profile includes the project's end-to-end checks where it has
+    runnable ones (`verification.md`, "End-to-end checks"), so they run here, once per wave, never
+    per leg. Derive any known-failing ceiling by running it, not by quoting a document, and read
+    the failures rather than only counting them.
+
+    **The run is recorded for its commit** when the tree is clean, which is why the repairs are
+    committed first. Once step 14 fast-forwards `main` to that commit, the next wave's step 7
+    reads the record instead of running anything.
 
     **A green test suite does not make this redundant.** Many test runners strip types without
     checking them, so a suite passes over a type error that the type checker reports.

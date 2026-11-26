@@ -36,15 +36,17 @@ names the only files the implementer may modify.
   rebrief, a wait, and a second review, and discards context the checker has already loaded. Name
   every inline repair in the acceptance record, since that note is the only remaining trace of how
   much of a ticket the checker finished.
-- Retain focused regression tests when they protect real behavior.
+- Retain focused regression tests when they protect real behavior. A check that reads source as
+  text is review evidence, not a regression test: delete it before committing unless it guards a
+  named risk (`speccheck` step 5).
 - Integrate only spec-checked work into a clean, non-overlapping target. Stop if the target moved
   incompatibly or user changes overlap.
 - **Review the merged tree, not the worktree.** Merge the delegated branch into an `integration`
   branch first, then run `speccheck` and repair there, so every fix is made against the code that
   will actually ship. `main` advances only by fast-forward from a verified `integration`.
-- **Run the full verification profile once, after the repairs, not before them.** A cheap
-  test-only run during `speccheck` is diagnostic evidence; the full baseline is the confirmation
-  gate. Skip it entirely when the merge was a fast-forward and the repair changed nothing, because
+- **Run the full verification profile once, after the repairs, not before them.** The new tests
+  plus `tools/test-project related` during `speccheck` are diagnostic evidence; the full baseline
+  is the confirmation gate. Skip it entirely when the merge was a fast-forward and the repair changed nothing, because
   the tree is then identical to the one already tested.
 - **Keep a delegated worktree warm after integration when it will be reused.** Do not reinstall
   dependencies into a kept worktree unless the merge actually changed one of

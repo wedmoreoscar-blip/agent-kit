@@ -59,11 +59,15 @@ baseline; "the accepted count from the previous ticket" is not, because the impl
 need to look it up or ask. The same goes for the current test count and for any command that
 behaves unexpectedly in this repository: name the trap and the correct invocation.
 
-**Get those numbers by running the commands, never by quoting a document.** A recorded count is
-stale the moment any ticket improves or worsens it, and the record is rarely updated everywhere it
-appears; a spec written from a stale count licenses a regression as "baseline held". The commands
-are in the `[commands]` block of `docs/project_profile.md`. Run them, read the totals off the output,
-and put those in the spec. It costs seconds and it cannot drift.
+**Get those numbers from `tools/test-project recorded`, never by quoting a document.** A count
+copied into a document is stale the moment any ticket improves or worsens it, and the copy is
+rarely updated everywhere it appears; a spec written from a stale count licenses a regression as
+"baseline held". `recorded` cannot drift that way: the last `full` run writes it, keyed by commit,
+and it prints only when `main` is still at that commit. The final baseline of the previous wave
+usually is that run, so a new wave normally costs no run at all. When it reports `STALE` or
+`NO RECORD` (`main` has moved since: an inline commit, another lane landing, a fresh clone), run
+`tools/test-project full` once on a clean `main` and quote that. One run serves every spec in the
+wave; never run the commands once per spec or once per worktree.
 
 **Read the failures, not only the count.** A known-failing total can hide a new, real error inside
 an unchanged number. Baseline entries are for known, understood, individually named failures.
@@ -124,8 +128,10 @@ The closing block says "Do NOT write new tests." That line is load-bearing. Do n
 do not write a spec clause that requires the implementer to produce test coverage.
 
 The implementer should get the code written and confirm two cheap things: it executes without
-syntax or import errors, and the existing suite still passes. Everything past that is the checker's,
-on the integration branch.
+syntax or import errors, and the existing tests its change can affect still pass (the baseline
+block's run list, normally `tools/test-project related`). Not the whole suite: its branch is
+isolated, so a full run there answers a question the merged tree asks again at the final baseline.
+Everything past that is the checker's, on the integration branch.
 
 Three reasons, in increasing order of importance:
 

@@ -8,14 +8,25 @@ coverage boundary.
 Run the project wrapper from the repository root:
 
 ```bash
+tools/test-project related     # only the tests the files you changed can affect
 tools/test-project quick
 tools/test-project build
-tools/test-project full
+tools/test-project full        # the gate; a clean run is recorded for its commit
+tools/test-project recorded    # the recorded full run for main, if main has not moved since
 ```
 
 The profiles and the commands behind them are defined in the `[profiles]` and `[commands]` blocks of
-`docs/project_profile.md`, so this file never needs to name a project's tooling. Use the smallest
-profile that covers the change. Do not silently redefine build success as test success.
+`docs/project_profile.md`, so this file never needs to name a project's tooling. While working, run
+`related`. Before committing, use the smallest profile that covers the change. The whole suite and
+the `full` profile are the gate at integration, run once per wave, not a habit after every edit. Do
+not silently redefine build success as test success.
+
+**`related` selects by imports, and has the blind spots that implies.** It runs the tests whose
+import graph reaches the changed files. A test that opens a source file with a file read imports
+nothing, so it is never selected; that is one more reason such checks are review evidence rather
+than standing tests (`speccheck` step 5). A deleted file has no import graph either: typecheck and
+the final baseline cover deletions. Configuration, fixtures and other non-code inputs may not be
+traced at all; when a change is mostly those, run `quick`.
 
 ## Evidence categories
 
@@ -42,6 +53,25 @@ Missing infrastructure is `BLOCKED`, never `PASS`.
   them, so a suite can pass straight over a type error.
 - **Derive every count by running the command, never by quoting a document.** Recorded counts go
   stale the moment any change moves them.
+
+## End-to-end checks, where applicable
+
+Unit tests prove the pieces; a few end-to-end checks prove the product works. Each project lists its
+critical flows under `## Critical flows` in `docs/project_profile.md`, three to five of them, with
+one check each, run by `[commands].e2e`:
+
+- **An app with a UI:** a browser test (Playwright) that drives the flow as a user would.
+- **A pipeline, job or CLI with no UI:** one run of the real entry point on frozen fixture inputs,
+  asserting on the output it produces, with network and paid services replaced by recorded
+  responses. Driving it through a browser would test nothing it does.
+- **A library:** an example that exercises the public API from end to end.
+
+Not every project needs one, which is why this is "where applicable". A flow that needs
+infrastructure agents cannot reach goes under `[implementer].blocked` and is reported `BLOCKED`.
+Where it is runnable, `e2e` belongs in the `full` profile, so it runs once per wave at the final
+baseline and never per leg. Keep the list short: an end-to-end check is the slowest and the most
+likely to flake, so each must earn its place by covering a flow whose failure a user would notice.
+Hundreds of narrow checks do not substitute for one that runs the product.
 
 ## High-risk areas
 

@@ -122,6 +122,20 @@ def guard_decision(guard: Path, payload: dict, env: dict | None = None) -> bool:
     return "permissionDecision" in result.stdout
 
 
+def note_whole_suite_runs(profile: dict) -> None:
+    """Advice, not a failure: point out where the profile still runs the whole suite routinely."""
+    commands = profile.get("commands", {})
+    if agent_profile.RELATED not in commands:
+        print("NOTE docs/project_profile.md has no [commands].test_related, so implementers and "
+              "per-merge checks run the whole suite (docs/workflows/verification.md, Profiles)")
+    elif "test" in profile.get("implementer", {}).get("run", []):
+        print("NOTE [implementer].run names \"test\" (the whole suite); name \"test_related\" "
+              "instead (docs/workflows/delegation.md, step 7)")
+    if "test_collect" not in commands:
+        print("NOTE docs/project_profile.md has no [commands].test_collect, so tools/prepare-worktree "
+              "runs the whole suite in every worktree")
+
+
 def check_writespec_guard(failures: list[str]) -> None:
     """Native subagent commissions are governed; exploration subagents and markers pass."""
     guard = ROOT / "tools/writespec-guard"
@@ -256,9 +270,11 @@ def main() -> int:
         pass
 
     try:
-        agent_profile.load(ROOT)
+        profile = agent_profile.load(ROOT)
     except agent_profile.ProfileError as exc:
         fail(str(exc), failures)
+    else:
+        note_whole_suite_runs(profile)
 
     count = check_skills(targets, failures)
 

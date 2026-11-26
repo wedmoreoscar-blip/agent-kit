@@ -18,6 +18,17 @@ SKILL_DIRS = (".claude/skills", ".agents/skills")
 
 _BLOCK_RE = re.compile(r"^```toml[ \t]*\n(.*?)^```[ \t]*$", re.S | re.M)
 
+# [commands].test_related runs only the tests the changed files can affect. Everyone reaches it
+# through `tools/test-project related`, which works out the files, so the spec block names that.
+RELATED = "test_related"
+RELATED_RUN = "tools/test-project related"
+FILES_PLACEHOLDER = "{files}"
+# A `full` run on a clean tree is recorded here, in the repository's shared git directory, so every
+# worktree reads the same record (tools/test-project recorded).
+BASELINE_RECORD = "agent-baseline.json"
+# Words tools/test-project reserves for its own modes, so no profile may use them.
+RESERVED_PROFILES = ("related", "recorded")
+
 
 class ProfileError(Exception):
     pass
@@ -57,6 +68,8 @@ def validate(data: dict) -> list[str]:
         return value
 
     for name, steps in data.get("profiles", {}).items():
+        if name in RESERVED_PROFILES:
+            problems.append(f"[profiles].{name}: {name!r} is reserved by tools/test-project")
         if not isinstance(steps, list):
             problems.append(f"[profiles].{name} must be a list of command names")
             continue
@@ -143,11 +156,15 @@ def render_block(name: str, root: Path = ROOT) -> str:
     data = load(root)
     commands = data["commands"]
     impl = data.get("implementer", {})
-    run = [commands[n] for n in impl.get("run", [])]
+    run = [
+        f"`{RELATED_RUN}` (only the tests the files you changed can affect; it finds the files itself)"
+        if n == RELATED else f"`{commands[n]}`"
+        for n in impl.get("run", [])
+    ]
     skip = [commands[n] for n in impl.get("skip", [])]
     forbid = impl.get("forbid", [])
     blocked = impl.get("blocked", [])
-    run_list = "\n".join(f"- `{c}`" for c in run) if run else "- nothing; there is no runnable check"
+    run_list = "\n".join(f"- {c}" for c in run) if run else "- nothing; there is no runnable check"
     skip_paragraph = (
         f"**Do not run {_code_list(skip)}.** They belong to the checker, who runs the full baseline "
         "once on the integration branch after review. They are the most expensive commands here and "

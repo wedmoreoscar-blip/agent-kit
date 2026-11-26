@@ -20,7 +20,7 @@ quirks, high-risk areas) live in `docs/project_profile.md`. `CLAUDE.md` imports 
   creating another abstraction.
 - Verify the changed behavior and inspect the complete diff before reporting completion. Report
   `PASS`, `FAIL`, `SKIP` and `BLOCKED` distinctly (`docs/workflows/verification.md`); run checks with
-  `tools/test-project <profile>`.
+  `tools/test-project related` while working and `tools/test-project <profile>` before reporting.
 - Never push, deploy, migrate a remote database, rotate secrets, or publish a release without an
   explicit user request. Never use `git -C <path> push` or any other form of push. Commit locally
   only.
@@ -42,7 +42,9 @@ quirks, high-risk areas) live in `docs/project_profile.md`. `CLAUDE.md` imports 
   mechanism is the orchestrating client's native subagents, each in its own git worktree. An
   orchestration tool is used only where its pack is installed **and** the tool is present on this
   machine; otherwise ignore its files and use native subagents.
-- Each spec states its verification baseline in literal numbers obtained by running the commands.
+- Each spec states its verification baseline in literal numbers from `tools/test-project recorded`
+  (or one `full` run on `main` when that reports stale), never copied from a document. Implementers
+  run only the tests related to their change; the whole suite runs once per wave, at integration.
 - The final visual check of a redesign follows `docs/workflows/visual_check.md`, not the delegation
   path. Halt and wait for the user on reaching it.
 - Serialize dependency installs, shared dev servers, local service mutations, and costly benchmarks

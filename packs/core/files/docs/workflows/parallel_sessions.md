@@ -85,6 +85,9 @@ Sessions share the machine and often one usage limit or quota.
 - Announce a heavy run (a long job, a batch, a wave of implementers) on the board before starting
   it, and run it detached with a log.
 - Run the full test profile only through `tools/land` or `tools/agent-lock resource-heavy`.
+  Everything else runs `tools/test-project related`. A clean `tools/land` run is recorded for its
+  commit, so once `main` fast-forwards to it every lane's next specs can quote
+  `tools/test-project recorded` instead of running it again.
 - A session that hits a usage or rate limit posts it, so the others know.
 
 ## Handoffs

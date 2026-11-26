@@ -11,6 +11,14 @@ This file belongs to this project; the agent kit never overwrites it.
 install_fresh = "echo 'set install_fresh: installs exactly the lockfile, never rewrites it'"
 install_incr  = "echo 'set install_incr: incremental install after a dependency change'"
 test          = "echo 'set test' && false"
+# test_related = ""  # only the tests the changed files can affect; {files} becomes their paths.
+#                    # Run through `tools/test-project related`, which finds the files. Examples:
+#                    #   "npx vitest related --run --passWithNoTests {files}"
+#                    #   ".venv/bin/python -m pytest -q --testmon"   (pytest-testmon; selects itself)
+#                    # Without it, `related` falls back to the whole `test` command.
+# test_collect = ""  # loads every test without running one; tools/prepare-worktree's readiness check.
+#                    #   "npx vitest list > /dev/null"   ".venv/bin/python -m pytest -q --collect-only"
+# e2e       = ""   # end-to-end check of the critical flows, where applicable (## Critical flows)
 # typecheck = ""
 # lint      = ""
 # build     = ""
@@ -19,10 +27,10 @@ test          = "echo 'set test' && false"
 [profiles]
 # tools/test-project <profile> runs these command names in order.
 quick = ["test"]
-full  = ["test"]
+full  = ["test"]     # the gate, run once per wave; add "e2e" here where it is runnable
 
 [implementer]
-run     = ["test"]   # what a delegated implementer runs itself
+run     = ["test"]   # what a delegated implementer runs itself; use "test_related" once defined
 skip    = []         # checker-only (the expensive ones); specs may not instruct them
 forbid  = []         # extra commands implementers must never run, e.g. deploy CLIs
 blocked = []         # verification an implementer cannot do, e.g. "browser checks", "live backend"
@@ -48,6 +56,13 @@ derive them by running the command. A parse or syntax error is never baseline no
 ## Blocked verification
 
 <!-- Evidence categories this project has but agents cannot reach (live backend, devices, …). -->
+
+## Critical flows
+
+<!-- The three to five things a user must be able to do, each with one end-to-end check where
+applicable ([commands].e2e): a browser test for a UI, one run of the real entry point on frozen
+fixtures for a pipeline or CLI. Say which are BLOCKED for agents, and why. See
+docs/workflows/verification.md, "End-to-end checks". -->
 
 ## High-risk areas
 

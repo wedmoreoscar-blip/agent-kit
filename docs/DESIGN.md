@@ -372,7 +372,8 @@ When moving a DrinkSmart file into the kit:
 - **Receipt** `.agent-kit.lock` is JSON: `kit_commit`, `packs`, `targets`, and per entry its kind,
   pack, path and a 16-hex-digit SHA-256 prefix of what the kit wrote.
 - **`ORCHESTRATION.md` stays at the repository root**, as in DrinkSmart.
-- **Profile keys:** `[commands]` (name → shell command, including `install_fresh`/`install_incr`),
+- **Profile keys:** `[commands]` (name → shell command, including `install_fresh`/`install_incr`,
+  and optionally `test_related` (`{files}` placeholder), `test_collect` and `e2e`, added 2026-11-26),
   `[profiles]` (name → command names), `[implementer]` (`run`, `skip`, `forbid`, `blocked`),
   `[worktree]` (`copy_files`, `dependency_files`). `tools/agent_profile.py` parses and validates it.
 - **Spec blocks.** `scope.md` and `closing.md` stay fixed text; `baseline.md` became

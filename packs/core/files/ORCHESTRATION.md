@@ -41,7 +41,9 @@ repairs, baseline).
 | --- | --- | --- |
 | Fixed overhead floor per delegation | Small tasks cost more delegated than done inline, on every axis at once | Explicit threshold in `delegation.md` ("When to delegate at all"): ~150+ mechanical production lines or a multi-leg wave delegates; smaller, design-heavy, or test-heavy work stays inline |
 | The threshold is a guess | No data measures delegated vs. inline cost | `docs/delegation_spend.md` ledger, one row per leg, enforced by `tools/spend-guard` at every integration; the rows will correct the number |
-| Machine contention | Parallel verification starves agents several-fold; a starved agent looks stalled, producing wrong diagnoses | Implementers run only the profile's `[implementer].run` commands; the expensive ones are checker-only and hook-enforced; the orchestrator never runs baselines while agents work |
+| Machine contention | Parallel verification starves agents several-fold; a starved agent looks stalled, producing wrong diagnoses | Implementers run only the profile's `[implementer].run` commands, normally `tools/test-project related`; the expensive ones are checker-only and hook-enforced; the orchestrator never runs baselines while agents work |
+| Whole-suite runs multiply with the wave | Every worktree, implementer and merge re-running the whole suite turns one baseline into dozens | Worktrees get a load-only check; implementers and per-merge checks run related tests only; spec counts come from the recorded full run for `main`; the whole suite runs once per wave |
+| The suite only grows | Every leg adds clause tests, often checks that read source as text, and none are ever retired | `speccheck` step 5: behaviour tests named for what they protect; source-text checks are review evidence, deleted before committing |
 | Clause map catches omissions, not mediocrity | Implementer code can satisfy every clause and still be fragile in the details | Inline repairs by the checker, named in the acceptance record so under-specification becomes visible as a trend; dense logic routed inline by the threshold |
 | Spec must pre-answer everything | For design-heavy work the spec *is* the solution serialized as prose; nothing was saved | Same threshold: design judgment stays with the orchestrator |
 | Orchestrator's visual pass bills images at frontier weight | §9 of `visual_check.md` is the priciest step for the orchestrator | Capped: numeric read-backs first, exactly one image per screen, no re-shoot loop |
@@ -80,7 +82,8 @@ when the rule stops applying.
 9. **Reuse warm worktrees and agents by default; treat creation as the exception.** (Reuse still
    needs the user's confirmation; make it a one-block question.)
 10. **Never verify while agents verify.** The orchestrator's baseline waits until handbacks are in
-    and runs once on the integration branch.
+    and runs once on the integration branch. Commit the repairs before it, so the run is recorded
+    and the next wave starts from `tools/test-project recorded` with no run at all.
 11. **Fix forward on a failed batch baseline.** Falling back to per-branch integration unpicks
     repairs already applied to re-derive attribution that is almost never the problem.
 

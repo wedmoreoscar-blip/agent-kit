@@ -69,12 +69,38 @@ that claim rather than inherit it.
 Cover at minimum: each clause's stated behaviour, the negative case for
 any conditional clause, and anything the spec named as acceptance criteria.
 
+**Test behaviour, and name the test after it.** Call the function, render
+the component, run the pipeline on a fixture, and assert on what comes out.
+Put the test beside the existing tests for that behaviour, named for what it
+protects, not for the ticket or wave. A file named after a wave is a record
+of one review; a suite of them only ever grows, and every later run pays for
+it.
+
+**A check that reads a source file as text is review evidence, not a test.**
+Asserting that a file contains or lacks a string ("the class name is there",
+"the old label is gone") passes over broken behaviour, fails on harmless
+refactors, and is invisible to `tools/test-project related`, which selects
+tests by what they import, so it never runs when the file it reads changes.
+Where a clause can only be checked that way, run the check, note the result
+in the acceptance record, and delete it before committing. Keep one only as
+a standing guard against a named, real risk (a forbidden import, a secret
+that must stay out), with a comment saying what it protects. If clauses keep
+needing such checks, the project lacks a test environment (a DOM, a
+fixture), and that is what to fix.
+
 ## 6. Run the tests, and fix inline
 
-Run the test suite only — not the full verification profile. This run is
-diagnostic: it makes the repairs targeted rather than speculative, and it
-verifies the implementer's claim that its tests pass rather than trusting it.
-It is cheap, so run it here.
+Run the tests you just wrote and the existing tests related to this leg:
+
+    tools/test-project related --base HEAD^1
+
+`HEAD^1` is the merge commit's first parent, so that selects exactly the
+leg just merged plus your uncommitted tests. Not the whole suite, and not the
+full verification profile: in a wave of several legs, a whole-suite answer
+at leg three is re-derived after the last leg anyway, so each one is paid for
+and thrown away. This run is diagnostic: it makes the repairs targeted rather
+than speculative, and it verifies the implementer's claim that its tests pass
+rather than trusting it. It is cheap, so run it here.
 
 Once the implementation is handed back, the checker owns the repair loop. The
 implementer's original model assignment, subject-matter category, warm context,
@@ -123,10 +149,17 @@ still requires the user's confirmation under the warm-agent rule.
 
 ## 7. Run the full baseline once, after the repairs
 
-Now run the whole profile, `tools/test-project full`, plus `git diff --check`.
-Compare any known-failing command against its baseline by reading the failures,
-not only the count. This is a confirmation gate, not a diagnostic. Running it
-before the repairs means running it twice.
+Commit the repairs first, then run the whole profile, `tools/test-project
+full`, plus `git diff --check`. The profile includes the project's end-to-end
+checks where it has runnable ones. Compare any known-failing command against
+its baseline by reading the failures, not only the count. This is a
+confirmation gate, not a diagnostic. Running it before the repairs means
+running it twice.
+
+A `full` run on a clean tree is recorded for its commit. Once `main`
+fast-forwards to that commit, the next wave's specs quote the record
+(`tools/test-project recorded`) instead of running anything, which is why the
+repairs are committed before this run rather than after it.
 
 Skip it only when step 1's merge was a fast-forward *and* step 6 changed
 nothing. The tree is then byte-identical to the one step 6 already tested, and

@@ -1,44 +1,195 @@
 #!/usr/bin/env python3
-"""Run a verification profile defined in docs/project_profile.md.
+"""Run the project's checks, as defined in docs/project_profile.md.
 
-    tools/test-project <profile>       e.g. quick, build, full
+    tools/test-project <profile>                      e.g. quick, build, full
+    tools/test-project related [--base REF] [-- FILE ...]
+    tools/test-project recorded [--ref REF]
     tools/test-project --list
 
-Each profile is a list of command names from [commands]. Every command runs from the repository
-root, even if one fails, and the exit status is non-zero if any failed. A command's output is shown
-in full: read the failures, not only the PASS/FAIL line.
+<profile>  Runs the profile's command names from [commands], in order, from the repository root.
+           Every command runs even if one fails; the exit status is non-zero if any failed. Output
+           is shown in full: read the failures, not only the PASS/FAIL line.
+
+related    Runs [commands].test_related on the files changed since the merge base with REF
+           (default `main`): committed, staged, unstaged and untracked. Or on the FILEs given after
+           `--`. `{files}` in the command becomes those paths, shell-quoted; a command without it
+           (a tool that selects tests itself) runs as written. Nothing changed means nothing runs.
+           Without [commands].test_related it runs [commands].test, the whole suite, and says so.
+           Implementers run this while working and before handback. The checker runs it after each
+           merge into integration with `--base HEAD^1`: the merge's first parent, so exactly the
+           leg just merged plus the checker's own uncommitted tests.
+
+recorded   A `full` run on a clean tree records its commit and each command's closing output in the
+           repository's shared git directory, so every worktree sees the same record. `recorded`
+           prints it when REF (default `main`) is still at that commit with the same `full`
+           profile, and exits 1 when it is not: run `tools/test-project full` once on REF, then
+           quote that. Specs take their counts from here (docs/workflows/delegation.md, step 7).
 """
+import json
+import shlex
 import subprocess
 import sys
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_profile  # noqa: E402
 
-try:
-    data = agent_profile.load()
-except agent_profile.ProfileError as exc:
-    agent_profile.die(f"test-project: {exc}")
-profiles = data.get("profiles", {})
+ROOT = agent_profile.ROOT
+TAIL_LINES = 15  # enough to keep a runner's summary (counts, error totals) in the record
+USAGE = "Usage: tools/test-project <profile> | related [--base REF] [-- FILE ...] | recorded [--ref REF] | --list"
 
-if len(sys.argv) != 2:
-    agent_profile.die("Usage: tools/test-project <profile> | --list", 64)
-if sys.argv[1] == "--list":
-    for name, steps in profiles.items():
-        print(f"{name}: {', '.join(steps)}")
-    sys.exit(0)
-name = sys.argv[1]
-if name not in profiles:
-    agent_profile.die(f"Unknown profile {name!r}. Defined: {', '.join(profiles) or 'none'}", 64)
 
-status = 0
-for step in profiles[name]:
-    command = data["commands"][step]
+def git(*args: str, check: bool = True) -> str:
+    result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    if check and result.returncode != 0:
+        agent_profile.die(f"test-project: git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def record_path() -> Path:
+    common = Path(git("rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = ROOT / common
+    return common / agent_profile.BASELINE_RECORD
+
+
+def run_step(step: str, command: str) -> tuple[int, list[str]]:
+    """Run one command, streaming its output and keeping the last lines for the record."""
     print(f"RUN  {step}: {command}", flush=True)
-    code = subprocess.run(command, shell=True, cwd=agent_profile.ROOT).returncode
+    proc = subprocess.Popen(command, shell=True, cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace")
+    tail: deque[str] = deque(maxlen=TAIL_LINES)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        tail.append(line.rstrip("\n"))
+    code = proc.wait()
     if code == 0:
         print(f"PASS {step}", flush=True)
     else:
         print(f"FAIL {step} (exit {code})", file=sys.stderr, flush=True)
-        status = 1
-sys.exit(status)
+    return code, list(tail)
+
+
+def run_profile(data: dict, name: str) -> int:
+    profiles = data.get("profiles", {})
+    if name not in profiles:
+        agent_profile.die(f"Unknown profile {name!r}. Defined: {', '.join(profiles) or 'none'}", 64)
+    # Only a clean tree is the commit it claims to be, so only a clean `full` run is recorded.
+    commit = git("rev-parse", "HEAD", check=False)
+    clean = bool(commit) and not git("status", "--porcelain", check=False)
+    status, steps = 0, []
+    for step in profiles[name]:
+        command = data["commands"][step]
+        code, tail = run_step(step, command)
+        if code:
+            status = 1
+        steps.append({"name": step, "command": command, "exit": code, "tail": tail})
+    if name == "full":
+        if clean:
+            record = {"commit": commit, "profile": profiles[name],
+                      "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                      "steps": steps}
+            record_path().write_text(json.dumps(record, indent=2) + "\n")
+            print(f"RECORDED full baseline for {commit[:12]} (tools/test-project recorded)")
+        else:
+            print("NOT RECORDED: the tree has uncommitted changes, so this run is not the result "
+                  "for any commit. Commit first if the next wave should reuse it.")
+    return status
+
+
+def changed_files(base: str) -> list[str]:
+    merge_base = git("merge-base", "HEAD", base)
+    tracked = git("diff", "--name-only", merge_base).splitlines()
+    untracked = git("ls-files", "--others", "--exclude-standard").splitlines()
+    # A deleted file has no tests of its own to select; typecheck and the final baseline cover it.
+    return sorted({f for f in tracked + untracked if f and (ROOT / f).exists()})
+
+
+def run_related(data: dict, args: list[str]) -> int:
+    base, files = "main", None
+    while args:
+        arg = args.pop(0)
+        if arg == "--base" and args:
+            base = args.pop(0)
+        elif arg == "--":
+            files, args = list(args), []
+        else:
+            agent_profile.die(USAGE, 64)
+    commands = data["commands"]
+    if agent_profile.RELATED not in commands:
+        if "test" not in commands:
+            agent_profile.die("test-project: neither [commands].test_related nor [commands].test "
+                              "is defined")
+        print("NOTE no [commands].test_related in docs/project_profile.md: running the whole suite "
+              "([commands].test) instead", flush=True)
+        return run_step("test", commands["test"])[0]
+    if files is None:
+        files = changed_files(base)
+        if not files:
+            print(f"SKIP {agent_profile.RELATED}: nothing changed since {base}")
+            return 0
+        print(f"FILES changed since {base}: {len(files)}", flush=True)
+    command = commands[agent_profile.RELATED]
+    if agent_profile.FILES_PLACEHOLDER in command:
+        command = command.replace(agent_profile.FILES_PLACEHOLDER,
+                                  " ".join(shlex.quote(f) for f in files))
+    return run_step(agent_profile.RELATED, command)[0]
+
+
+def show_recorded(data: dict, args: list[str]) -> int:
+    ref = "main"
+    if len(args) == 2 and args[0] == "--ref":
+        ref = args[1]
+    elif args:
+        agent_profile.die(USAGE, 64)
+    target = git("rev-parse", "--verify", f"{ref}^{{commit}}")
+    path = record_path()
+    stale = f"run `tools/test-project full` once on a clean checkout of {ref} and quote that."
+    if not path.is_file():
+        print(f"NO RECORD: no full run has been recorded in this repository; {stale}")
+        return 1
+    record = json.loads(path.read_text())
+    if record.get("commit") != target:
+        print(f"STALE: recorded for {str(record.get('commit', '?'))[:12]}, but {ref} is at "
+              f"{target[:12]}; {stale}")
+        return 1
+    if record.get("profile") != data.get("profiles", {}).get("full"):
+        print(f"STALE: the full profile has changed since this was recorded; {stale}")
+        return 1
+    print(f"Recorded full baseline for {ref} at {target[:12]} ({record['recorded_at']}):")
+    for step in record["steps"]:
+        verdict = "PASS" if step["exit"] == 0 else f"FAIL (exit {step['exit']})"
+        print(f"\n{verdict} {step['name']}: {step['command']}")
+        for line in step["tail"]:
+            print(f"    {line}")
+    return 0
+
+
+def main() -> int:
+    try:
+        data = agent_profile.load()
+    except agent_profile.ProfileError as exc:
+        agent_profile.die(f"test-project: {exc}")
+    args = sys.argv[1:]
+    if not args:
+        agent_profile.die(USAGE, 64)
+    if args[0] == "--list":
+        for name, steps in data.get("profiles", {}).items():
+            print(f"{name}: {', '.join(steps)}")
+        print(f"related: {data['commands'].get(agent_profile.RELATED, 'not defined, so it runs test')}")
+        return 0
+    if args[0] == "related":
+        return run_related(data, args[1:])
+    if args[0] == "recorded":
+        return show_recorded(data, args[1:])
+    if len(args) != 1:
+        agent_profile.die(USAGE, 64)
+    return run_profile(data, args[0])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
